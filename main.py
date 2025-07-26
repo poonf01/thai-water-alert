@@ -6,44 +6,34 @@ from bs4 import BeautifulSoup
 
 # --- ส่วนตั้งค่าหลัก ---
 SINGBURI_WATER_URL = "https://singburi.thaiwater.net/wl"
-DAM_URL = "https://water.onwr.go.th/api/v1/stations/dam/100101/historical"
 LINE_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_API_URL = "https://api.line.me/v2/bot/message/broadcast"
 
-# --- ส่วนที่ 1: ฟังก์ชันดึงข้อมูล (ปรับปรุงใหม่) ---
+# --- ส่วนที่ 1: ฟังก์ชันดึงข้อมูล (ปรับปรุงใหม่ทั้งหมด) ---
 
 def get_singburi_data(url):
-    """ดึงข้อมูลระดับน้ำจากเว็บ singburi.thaiwater.net (ปรับปรุงวิธีค้นหา)"""
+    """ดึงข้อมูลระดับน้ำจากเว็บ singburi.thaiwater.net"""
     try:
         print("กำลังเชื่อมต่อกับ singburi.thaiwater.net...")
         response = requests.get(url, timeout=20)
         response.raise_for_status()
         
         soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # *** ปรับปรุงวิธีค้นหาใหม่ทั้งหมด ***
-        # 1. หาตารางข้อมูลหลัก
         table = soup.find('table')
         if not table:
             print("ไม่พบตารางข้อมูลในหน้าเว็บ")
             return None
             
-        # 2. หาทุกแถว (tr) ในส่วน tbody ของตาราง
         rows = table.find('tbody').find_all('tr')
         
-        # 3. วนลูปหาแถวที่มีคำว่า "อินทร์บุรี"
         for row in rows:
-            # .text จะเอาข้อความทั้งหมดในแถวนั้นมา
             if 'อินทร์บุรี' in row.text:
                 print("พบแถวข้อมูลของ 'อินทร์บุรี' แล้ว")
                 columns = row.find_all('td')
-                # คอลัมน์ที่ 2 คือระดับน้ำ
-                water_level_str = columns[2].text.strip()
-                water_level = float(water_level_str)
+                water_level = float(columns[2].text.strip())
                 print(f"ดึงข้อมูลสำเร็จ: ระดับน้ำ {water_level} ม.รทก.")
                 return water_level
         
-        # ถ้าวนลูปจนจบแล้วยังไม่เจอ
         print("วนลูปจนสุด แต่ไม่พบแถวข้อมูลของ 'อินทร์บุรี'")
         return None
         
@@ -51,34 +41,22 @@ def get_singburi_data(url):
         print(f"เกิดข้อผิดพลาดในการดึงข้อมูลจาก {url}: {e}")
         return None
 
-def get_dam_discharge():
-    """ดึงข้อมูลการระบายน้ำล่าสุดจาก API ของ สทนช."""
+def get_dam_discharge_from_file():
+    """อ่านข้อมูลการระบายน้ำของเขื่อนจากไฟล์ dam_data.txt"""
     try:
-        print("กำลังเชื่อมต่อกับ API ข้อมูลเขื่อน...")
-        params = {'day': 1}
-        # เพิ่ม verify=False เพื่อป้องกันปัญหา SSL
-        response = requests.get(DAM_URL, params=params, timeout=20, verify=False)
-        response.raise_for_status()
-        data = response.json()
-        
-        latest_data = data[-1]
-        discharge_rate = latest_data.get('discharge')
-        
-        if discharge_rate is None:
-            print("ไม่พบข้อมูล 'discharge' ใน API ตอบกลับ")
-            return None
-        
-        print(f"พบข้อมูลเขื่อนเจ้าพระยา: ระบายน้ำ {discharge_rate} ลบ.ม./วินาที")
-        return float(discharge_rate)
-
+        print("กำลังอ่านข้อมูลเขื่อนจากไฟล์ dam_data.txt...")
+        with open('dam_data.txt', 'r') as f:
+            discharge_rate = float(f.read().strip())
+        print(f"อ่านข้อมูลสำเร็จ: เขื่อนระบายน้ำ {discharge_rate} ลบ.ม./วินาที")
+        return discharge_rate
     except Exception as e:
-        print(f"เกิดข้อผิดพลาดในการดึงข้อมูลเขื่อนจาก API: {e}")
-        return None
+        print(f"เกิดข้อผิดพลาดในการอ่านไฟล์ dam_data.txt: {e}")
+        return 1000 # คืนค่า default ที่ปลอดภัยหากอ่านไฟล์ไม่ได้
 
 # --- ส่วนที่ 2: ฟังก์ชันวิเคราะห์และสร้างข้อความ (เหมือนเดิม) ---
 def analyze_and_create_message(inburi_level, dam_discharge):
-    if inburi_level is None or dam_discharge is None:
-        return "เกิดข้อผิดพลาด: ไม่สามารถดึงข้อมูลสำคัญเพื่อทำการวิเคราะห์ได้ กรุณาตรวจสอบ Log การทำงานล่าสุด"
+    if inburi_level is None:
+        return "เกิดข้อผิดพลาด: ไม่สามารถดึงข้อมูลระดับน้ำอินทร์บุรีได้ กรุณาตรวจสอบเว็บไซต์ singburi.thaiwater.net"
 
     bank_height = 13.0
     distance_to_bank = bank_height - inburi_level
@@ -105,7 +83,7 @@ def analyze_and_create_message(inburi_level, dam_discharge):
         f"ประจำวันที่: {now.strftime('%d/%m/%Y %H:%M')} น.\n\n"
         f"• ระดับน้ำ (อินทร์บุรี): {inburi_level:.2f} ม.รทก.\n"
         f"  (ต่ำกว่าตลิ่งที่ตั้งค่าไว้ {distance_to_bank:.2f} ม.)\n"
-        f"• เขื่อนเจ้าพระยา: ระบายน้ำ {dam_discharge:,.0f} ลบ.ม./วินาที\n\n"
+        f"• เขื่อนเจ้าพระยา (ข้อมูลล่าสุดที่คุณป้อน): {dam_discharge:,.0f} ลบ.ม./วินาที\n\n"
         f"{recommendation}"
     )
     return message
@@ -126,16 +104,19 @@ def send_line_broadcast(message):
 
 # --- ส่วนทำงานหลัก (Main) ---
 if __name__ == "__main__":
-    print("===== เริ่มการทำงานของระบบเฝ้าระวังน้ำ v3.1 =====")
+    print("===== เริ่มการทำงานของระบบเฝ้าระวังน้ำ v4.0 (Final) =====")
     
+    # 1. ดึงข้อมูล
     inburi_level = get_singburi_data(SINGBURI_WATER_URL)
-    dam_discharge = get_dam_discharge()
+    dam_discharge = get_dam_discharge_from_file()
     
+    # 2. วิเคราะห์และสร้างข้อความ
     final_message = analyze_and_create_message(inburi_level, dam_discharge)
     print("\n--- ข้อความที่จะส่ง ---")
     print(final_message)
     print("---------------------\n")
     
+    # 3. ส่งข้อความ
     send_line_broadcast(final_message)
         
     print("===== การทำงานเสร็จสิ้น =====")
