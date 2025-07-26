@@ -17,8 +17,8 @@ jobs:
           python-version: '3.10'
 
       - name: Install dependencies
-        # เพิ่ม selenium และ webdriver-manager สำหรับการดึงข้อมูลจากเว็บที่ใช้ JavaScript
-        run: pip install requests pytz beautifulsoup4 selenium webdriver-manager
+        # เพิ่ม selenium-stealth เพื่อหลบเลี่ยงการตรวจจับ Bot
+        run: pip install requests pytz beautifulsoup4 selenium webdriver-manager selenium-stealth
 
       - name: Run main.py
         env:
