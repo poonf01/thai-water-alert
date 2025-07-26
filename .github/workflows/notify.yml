@@ -2,7 +2,7 @@ name: Notify Facebook
 
 on:
   schedule:
-    - cron: '0 2,9,12,17 * * *'  # 09:00 / 16:00 / 19:00 / 00:00 เวลาไทย
+    - cron: '0 1,10 * * *'  # 08:00 / 17:00 เวลาไทย
   workflow_dispatch:
 
 jobs:
