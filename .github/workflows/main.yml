@@ -29,9 +29,9 @@ jobs:
         with:
           python-version: '3.10'
 
-      # 3. ติดตั้งไลบรารีที่จำเป็นสำหรับโค้ดของเรา
+      # 3. ติดตั้งไลบรารีที่จำเป็นสำหรับโค้ดของเรา (เพิ่ม beautifulsoup4)
       - name: Install dependencies
-        run: pip install requests pytz
+        run: pip install requests pytz beautifulsoup4
 
       # 4. รันสคริปต์ Python ของเรา
       - name: Run Python script
