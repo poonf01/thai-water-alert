@@ -4,63 +4,47 @@ from datetime import datetime
 import pytz
 from bs4 import BeautifulSoup
 
-# --- เพิ่มส่วนการตั้งค่า Log ---
-import logging
-import sys
-logging.basicConfig(stream=sys.stdout, level=logging.INFO)
-logging.getLogger('webdriver_manager').setLevel(logging.DEBUG)
-
+# --- ไม่ต้องใช้ selenium-stealth ในเวอร์ชันนี้ ---
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
-from selenium.common.exceptions import TimeoutException
-from selenium_stealth import stealth
 
+# --- ค่าคงที่และตัวแปรหลัก ---
 SINGBURI_WATER_URL = "https://singburi.thaiwater.net/wl"
 LINE_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_API_URL = "https://api.line.me/v2/bot/message/broadcast"
 
 
 def get_singburi_data(url):
+    """
+    (v11 - Simplified) ทดลองดึงข้อมูลด้วย Selenium ที่มีการตั้งค่าน้อยที่สุด
+    """
     driver = None
     try:
-        print("[STEP 1] กำลังตั้งค่า Chrome Options...")
+        print("กำลังตั้งค่า Chrome Options (Simplified)...")
         options = webdriver.ChromeOptions()
+        # เหลือไว้เฉพาะ options ที่จำเป็นสำหรับ GitHub Actions
         options.add_argument("--headless")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("start-maximized")
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        options.add_experimental_option('useAutomationExtension', False)
         
-        print("[STEP 2] กำลังติดตั้งและเริ่มต้น WebDriver...")
+        print("กำลังติดตั้งและเริ่มต้น WebDriver...")
         driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
         
-        print("[STEP 3] กำลังใช้ Stealth เพื่อพรางตัว...")
-        stealth(driver,
-                languages=["en-US", "en"],
-                vendor="Google Inc.",
-                platform="Win32",
-                webgl_vendor="Intel Inc.",
-                renderer="Intel Iris OpenGL Engine",
-                fix_hairline=True,
-                )
+        print("กำลังตั้งค่า Page Load Timeout เป็น 180 วินาที...")
+        driver.set_page_load_timeout(180) # ให้เวลารอโหลดหน้าเว็บ 3 นาที
         
-        # --- เพิ่มคำสั่งที่ขาดไปกลับเข้ามา ---
-        print("[STEP 4] กำลังตั้งค่า Page Load Timeout เป็น 300 วินาที...")
-        driver.set_page_load_timeout(300) # ให้เวลารอโหลดหน้าเว็บ 5 นาที
-        
-        print(f"[STEP 5] กำลังเปิด URL: {url}...")
+        print(f"กำลังเปิด URL: {url}...")
         driver.get(url)
         
-        print("[STEP 6] กำลังรอให้ตารางข้อมูลปรากฏ...")
+        print("กำลังรอให้ตารางข้อมูลปรากฏ...")
         wait = WebDriverWait(driver, 60)
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "tbody > tr")))
         
-        print("[STEP 7] กำลังดึงข้อมูล HTML...")
+        print("กำลังดึงข้อมูล HTML...")
         page_html = driver.page_source
         soup = BeautifulSoup(page_html, 'html.parser')
 
@@ -144,7 +128,7 @@ def send_line_broadcast(message):
 
 
 if __name__ == "__main__":
-    print("===== เริ่มการทำงาน v10.0 (Timeout Fix Re-applied) =====")
+    print("===== เริ่มการทำงาน v11.0 (Simplified) =====")
     inburi_level = get_singburi_data(SINGBURI_WATER_URL)
     dam_discharge = get_dam_discharge_from_file()
     final_message = analyze_and_create_message(inburi_level, dam_discharge)
