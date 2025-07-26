@@ -3,3 +3,4 @@ python-dotenv
 pillow
 pytz
 beautifulsoup4
+selenium
