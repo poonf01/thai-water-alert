@@ -4,6 +4,16 @@ from datetime import datetime
 import pytz
 from bs4 import BeautifulSoup
 
+# --- เพิ่มส่วนการตั้งค่า Log เพื่อดูการทำงานของ webdriver-manager ---
+import logging
+import sys
+
+# ตั้งค่าให้แสดง Log การทำงานของทุกอย่างออกมาที่หน้าจอ
+logging.basicConfig(stream=sys.stdout, level=logging.INFO)
+# ตั้งค่าให้แสดง Log การทำงานของ webdriver-manager โดยเฉพาะในระดับ DEBUG
+logging.getLogger('webdriver_manager').setLevel(logging.DEBUG)
+# --- จบส่วนการตั้งค่า Log ---
+
 # --- เพิ่ม Library ของ Selenium และ Stealth ---
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
@@ -12,7 +22,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.common.exceptions import TimeoutException
-from selenium_stealth import stealth # <-- เพิ่ม Library ตัวใหม่
+from selenium_stealth import stealth
 
 # --- ค่าคงที่และตัวแปรหลัก ---
 SINGBURI_WATER_URL = "https://singburi.thaiwater.net/wl"
@@ -23,7 +33,7 @@ LINE_API_URL = "https://api.line.me/v2/bot/message/broadcast"
 def get_singburi_data(url):
     driver = None
     try:
-        print("[1/6] กำลังตั้งค่า Chrome Options...")
+        print("[STEP 1] กำลังตั้งค่า Chrome Options...")
         options = webdriver.ChromeOptions()
         options.add_argument("--headless")
         options.add_argument("--no-sandbox")
@@ -32,11 +42,10 @@ def get_singburi_data(url):
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
         
-        print("[2/6] กำลังติดตั้งและเริ่มต้น WebDriver...")
+        print("[STEP 2] กำลังติดตั้งและเริ่มต้น WebDriver (ขั้นตอนนี้อาจใช้เวลานาน)...")
         driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
         
-        # --- ใช้ Stealth เพื่อพรางตัว ---
-        print("[3/6] กำลังใช้ Stealth เพื่อพรางตัว...")
+        print("[STEP 3] กำลังใช้ Stealth เพื่อพรางตัว...")
         stealth(driver,
                 languages=["en-US", "en"],
                 vendor="Google Inc.",
@@ -45,18 +54,15 @@ def get_singburi_data(url):
                 renderer="Intel Iris OpenGL Engine",
                 fix_hairline=True,
                 )
-        print("✅ พรางตัวสำเร็จ")
-
-        print(f"[4/6] กำลังเปิด URL: {url}...")
-        driver.get(url)
-        print("✅ เปิด URL สำเร็จ")
         
-        print("[5/6] กำลังรอให้ตารางข้อมูลปรากฏ (สูงสุด 60 วินาที)...")
-        wait = WebDriverWait(driver, 60) # เพิ่มเวลารอ element เป็น 60 วินาที
+        print(f"[STEP 4] กำลังเปิด URL: {url}...")
+        driver.get(url)
+        
+        print("[STEP 5] กำลังรอให้ตารางข้อมูลปรากฏ...")
+        wait = WebDriverWait(driver, 60)
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "tbody > tr")))
-        print("✅ พบตารางข้อมูลแล้ว")
-
-        print("[6/6] กำลังดึงข้อมูล HTML และประมวลผล...")
+        
+        print("[STEP 6] กำลังดึงข้อมูล HTML...")
         page_html = driver.page_source
         soup = BeautifulSoup(page_html, 'html.parser')
 
@@ -64,23 +70,16 @@ def get_singburi_data(url):
         for row in rows:
             station_header = row.find("th")
             if station_header and "อินทร์บุรี" in station_header.get_text(strip=True):
-                print("✅ พบข้อมูลของ 'อินทร์บุรี'")
                 tds = row.find_all("td")
-                
                 if len(tds) > 1 and tds[1].text.strip():
                     level_str = tds[1].text.strip()
                     water_level = float(level_str)
-                    print(f"ระดับน้ำอินทร์บุรีที่ดึงได้ = {water_level} ม.รทก.")
                     return water_level
         
-        print("❌ ไม่พบข้อมูลของ 'อินทร์บุรี' ในตาราง")
         return None
 
-    except TimeoutException as te:
-        print(f"❌ เกิดข้อผิดพลาด Timeout: {te}")
-        return None
     except Exception as e:
-        print(f"❌ เกิดข้อผิดพลาดที่ไม่คาดคิด: {e}")
+        print(f"❌ เกิดข้อผิดพลาดในฟังก์ชัน get_singburi_data: {e}")
         return None
     finally:
         if driver:
@@ -95,14 +94,12 @@ def get_dam_discharge_from_file():
         with open('dam_data.txt', 'r') as f:
             discharge_rate = float(f.read().strip())
         return discharge_rate
-    except FileNotFoundError:
-        return 1000
     except Exception:
         return 1000
 
 def analyze_and_create_message(inburi_level, dam_discharge):
     if inburi_level is None:
-        return "เกิดข้อผิดพลาด: ไม่สามารถดึงข้อมูลระดับน้ำอินทร์บุรีได้ กรุณาตรวจสอบเว็บไซต์ singburi.thaiwater.net หรือตรวจสอบ Log การทำงานล่าสุด"
+        return "เกิดข้อผิดพลาด: ไม่สามารถดึงข้อมูลระดับน้ำอินทร์บุรีได้ กรุณาตรวจสอบ Log การทำงานล่าสุด"
 
     bank_height = 13.0
     distance_to_bank = bank_height - inburi_level
@@ -149,7 +146,7 @@ def send_line_broadcast(message):
 
 
 if __name__ == "__main__":
-    print("===== เริ่มการทำงาน v8.0 (Stealth Mode) =====")
+    print("===== เริ่มการทำงาน v9.0 (Detailed Logging) =====")
     inburi_level = get_singburi_data(SINGBURI_WATER_URL)
     dam_discharge = get_dam_discharge_from_file()
     final_message = analyze_and_create_message(inburi_level, dam_discharge)
