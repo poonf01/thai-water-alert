@@ -17,7 +17,8 @@ jobs:
           python-version: '3.10'
 
       - name: Install dependencies
-        run: pip install requests pytz beautifulsoup4
+        # เพิ่ม selenium และ webdriver-manager สำหรับการดึงข้อมูลจากเว็บที่ใช้ JavaScript
+        run: pip install requests pytz beautifulsoup4 selenium webdriver-manager
 
       - name: Run main.py
         env:
