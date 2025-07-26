@@ -1,0 +1,41 @@
+# ชื่อของ Workflow ที่จะแสดงในหน้า Actions
+name: Water Alert Workflow
+
+# กำหนดเงื่อนไขการทำงาน
+on:
+  # ตั้งเวลาทำงานอัตโนมัติ (เวลาเป็น UTC)
+  schedule:
+    # ทำงานตอน 01:00 UTC (8 โมงเช้าไทย) และ 09:00 UTC (4 โมงเย็นไทย)
+    - cron: '0 1,9 * * *'
+  # อนุญาตให้รันด้วยมือได้ผ่านหน้า Actions
+  workflow_dispatch:
+
+# กำหนดงานที่จะทำ
+jobs:
+  # ชื่องาน (ตั้งอะไรก็ได้)
+  run-water-alert-script:
+    # เลือกระบบปฏิบัติการที่จะใช้รันโค้ด
+    runs-on: ubuntu-latest
+
+    # ขั้นตอนการทำงาน
+    steps:
+      # 1. เช็คเอาท์โค้ดจาก Repository ของเราลงมาที่เครื่องเซิร์ฟเวอร์
+      - name: Check out repository code
+        uses: actions/checkout@v4
+
+      # 2. ตั้งค่าสภาพแวดล้อมของ Python
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      # 3. ติดตั้งไลบรารีที่จำเป็นสำหรับโค้ดของเรา (เพิ่ม beautifulsoup4)
+      - name: Install dependencies
+        run: pip install requests pytz beautifulsoup4
+
+      # 4. รันสคริปต์ Python ของเรา
+      - name: Run Python script
+        # กำหนด Environment Variable ให้โค้ด Python ดึงไปใช้
+        env:
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+        run: python main.py
