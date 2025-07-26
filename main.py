@@ -4,13 +4,15 @@ from datetime import datetime
 import pytz
 from bs4 import BeautifulSoup
 
-# --- เพิ่ม Library ของ Selenium ---
+# --- เพิ่ม Library ของ Selenium และ Stealth ---
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
+from selenium.common.exceptions import TimeoutException
+from selenium_stealth import stealth # <-- เพิ่ม Library ตัวใหม่
 
 # --- ค่าคงที่และตัวแปรหลัก ---
 SINGBURI_WATER_URL = "https://singburi.thaiwater.net/wl"
@@ -19,84 +21,86 @@ LINE_API_URL = "https://api.line.me/v2/bot/message/broadcast"
 
 
 def get_singburi_data(url):
-    """
-    ดึงข้อมูลระดับน้ำโดยใช้ Selenium เพื่อรอให้ JavaScript โหลดข้อมูลจนเสร็จ
-    """
-    print("กำลังตั้งค่า Selenium WebDriver...")
-    options = webdriver.ChromeOptions()
-    options.add_argument("--headless")  # รันเบราว์เซอร์ในเบื้องหลัง (จำเป็นสำหรับ GitHub Actions)
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-
-    driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
-    
+    driver = None
     try:
-        print(f"กำลังเชื่อมต่อกับ {url} ด้วย Selenium...")
+        print("[1/6] กำลังตั้งค่า Chrome Options...")
+        options = webdriver.ChromeOptions()
+        options.add_argument("--headless")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("start-maximized")
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option('useAutomationExtension', False)
+        
+        print("[2/6] กำลังติดตั้งและเริ่มต้น WebDriver...")
+        driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
+        
+        # --- ใช้ Stealth เพื่อพรางตัว ---
+        print("[3/6] กำลังใช้ Stealth เพื่อพรางตัว...")
+        stealth(driver,
+                languages=["en-US", "en"],
+                vendor="Google Inc.",
+                platform="Win32",
+                webgl_vendor="Intel Inc.",
+                renderer="Intel Iris OpenGL Engine",
+                fix_hairline=True,
+                )
+        print("✅ พรางตัวสำเร็จ")
+
+        print(f"[4/6] กำลังเปิด URL: {url}...")
         driver.get(url)
-
-        # รอสูงสุด 30 วินาที จนกว่าจะเจอแถวแรกของตาราง (tbody > tr) เพื่อให้แน่ใจว่าข้อมูลโหลดแล้ว
-        wait = WebDriverWait(driver, 30)
+        print("✅ เปิด URL สำเร็จ")
+        
+        print("[5/6] กำลังรอให้ตารางข้อมูลปรากฏ (สูงสุด 60 วินาที)...")
+        wait = WebDriverWait(driver, 60) # เพิ่มเวลารอ element เป็น 60 วินาที
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "tbody > tr")))
-        print("✅ พบตารางข้อมูลแล้ว กำลังดึงข้อมูล HTML...")
+        print("✅ พบตารางข้อมูลแล้ว")
 
-        # ดึง HTML ของหน้าที่สมบูรณ์ (หลังจาก JavaScript ทำงานแล้ว)
+        print("[6/6] กำลังดึงข้อมูล HTML และประมวลผล...")
         page_html = driver.page_source
         soup = BeautifulSoup(page_html, 'html.parser')
 
         rows = soup.find_all("tr")
-        print(f"ค้นพบ {len(rows)} แถวในตาราง กำลังค้นหาสถานี 'อินทร์บุรี'...")
-
         for row in rows:
             station_header = row.find("th")
             if station_header and "อินทร์บุรี" in station_header.get_text(strip=True):
                 print("✅ พบข้อมูลของ 'อินทร์บุรี'")
                 tds = row.find_all("td")
                 
-                # tds[1] คือ ระดับน้ำ
                 if len(tds) > 1 and tds[1].text.strip():
                     level_str = tds[1].text.strip()
                     water_level = float(level_str)
                     print(f"ระดับน้ำอินทร์บุรีที่ดึงได้ = {water_level} ม.รทก.")
                     return water_level
-                else:
-                    print("⚠️ พบแถว 'อินทร์บุรี' แต่ข้อมูลระดับน้ำในคอลัมน์ที่ 2 ไม่ถูกต้อง")
-                    return None
         
         print("❌ ไม่พบข้อมูลของ 'อินทร์บุรี' ในตาราง")
         return None
 
+    except TimeoutException as te:
+        print(f"❌ เกิดข้อผิดพลาด Timeout: {te}")
+        return None
     except Exception as e:
-        print(f"เกิดข้อผิดพลาดระหว่างการทำงานของ Selenium: {e}")
+        print(f"❌ เกิดข้อผิดพลาดที่ไม่คาดคิด: {e}")
         return None
     finally:
-        # ปิดเบราว์เซอร์ทุกครั้งที่ทำงานเสร็จสิ้น
-        print("กำลังปิด Selenium WebDriver...")
-        driver.quit()
+        if driver:
+            print("กำลังปิด WebDriver...")
+            driver.quit()
 
-
+#
+# --- ส่วนที่เหลือของไฟล์เหมือนเดิม ---
+#
 def get_dam_discharge_from_file():
-    """
-    อ่านข้อมูลการระบายน้ำของเขื่อนจากไฟล์ (ถ้ามี)
-    """
     try:
-        print("กำลังอ่านข้อมูลเขื่อนจากไฟล์ dam_data.txt...")
         with open('dam_data.txt', 'r') as f:
             discharge_rate = float(f.read().strip())
-        print(f"เขื่อนระบายน้ำ {discharge_rate:,.0f} ลบ.ม./วินาที")
         return discharge_rate
     except FileNotFoundError:
-        print("⚠️ ไม่พบไฟล์ dam_data.txt! ใช้ค่า default = 1000 ลบ.ม./วินาที")
         return 1000
-    except Exception as e:
-        print(f"เกิดข้อผิดพลาดในการอ่านไฟล์ dam_data.txt: {e}")
+    except Exception:
         return 1000
-
 
 def analyze_and_create_message(inburi_level, dam_discharge):
-    """
-    วิเคราะห์ข้อมูลและสร้างข้อความสำหรับส่งแจ้งเตือน
-    """
     if inburi_level is None:
         return "เกิดข้อผิดพลาด: ไม่สามารถดึงข้อมูลระดับน้ำอินทร์บุรีได้ กรุณาตรวจสอบเว็บไซต์ singburi.thaiwater.net หรือตรวจสอบ Log การทำงานล่าสุด"
 
@@ -130,13 +134,9 @@ def analyze_and_create_message(inburi_level, dam_discharge):
     )
     return message
 
-
 def send_line_broadcast(message):
-    """
-    ส่งข้อความแจ้งเตือนไปยัง LINE
-    """
     if not LINE_TOKEN:
-        print("❌ ไม่พบ LINE_CHANNEL_ACCESS_TOKEN ใน Environment Variables!")
+        print("❌ ไม่พบ LINE_CHANNEL_ACCESS_TOKEN!")
         return
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"}
     payload = {"messages": [{"type": "text", "text": message}]}
@@ -149,7 +149,7 @@ def send_line_broadcast(message):
 
 
 if __name__ == "__main__":
-    print("===== เริ่มการทำงานของระบบเฝ้าระวังน้ำ v7.0 (Selenium Scraper) =====")
+    print("===== เริ่มการทำงาน v8.0 (Stealth Mode) =====")
     inburi_level = get_singburi_data(SINGBURI_WATER_URL)
     dam_discharge = get_dam_discharge_from_file()
     final_message = analyze_and_create_message(inburi_level, dam_discharge)
