@@ -6,13 +6,14 @@ import pytz
 # --- ส่วนตั้งค่าหลัก ---
 # URL สำหรับดึงข้อมูล
 INBURI_URL = "http://watertele.rid.go.th/tele/lpbr_tele/report_hist.php?id=35"
-CHAO_PHRAYA_DAM_URL = "https://watertele.rid.go.th/tele/dam/report_hist_dam.php?id=1"
+# *** อัปเดต URL เขื่อนเจ้าพระยาเป็นลิงก์ใหม่ ***
+CHAO_PHRAYA_DAM_URL = "http://watertele.rid.go.th/tele/dam/dam_daily.php?id=1"
 
 # กุญแจสำหรับส่ง LINE
 LINE_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_API_URL = "https://api.line.me/v2/bot/message/broadcast"
 
-# *** เพิ่มส่วนนี้เข้ามา: ปิดการแจ้งเตือนเรื่อง SSL InsecureRequestWarning ***
+# ปิดการแจ้งเตือนเรื่อง SSL InsecureRequestWarning
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
@@ -20,7 +21,6 @@ requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 def get_water_data(url):
     """ดึงข้อมูลจากเว็บกรมชลประทานและคืนค่าล่าสุด"""
     try:
-        # *** แก้ไขตรงนี้: เพิ่ม verify=False เพื่อข้ามการตรวจสอบ SSL ***
         response = requests.get(url, timeout=15, verify=False)
         response.raise_for_status()
         
@@ -37,14 +37,16 @@ def get_water_data(url):
         return None, None, None
 
 def get_dam_data(url):
-    """ดึงข้อมูลจากเว็บเขื่อน"""
+    """ดึงข้อมูลจากเว็บเขื่อน (ปรับปรุงใหม่)"""
     try:
-        # *** แก้ไขตรงนี้: เพิ่ม verify=False เพื่อข้ามการตรวจสอบ SSL ***
         response = requests.get(url, timeout=15, verify=False)
         response.raise_for_status()
-        last_row = response.text.split('</TR>')[-2]
-        columns = last_row.split('</TD>')
         
+        # *** โค้ดส่วนนี้ปรับใหม่ให้ตรงกับหน้าเว็บของเขื่อน ***
+        last_row = response.text.split('</TR>')[-2]
+        columns = last_row.split('</font>')
+        
+        # ดึงข้อมูลการระบายน้ำจากคอลัมน์ที่ถูกต้อง
         discharge_rate = float(columns[6].split('>')[-1].strip())
         return discharge_rate
     except Exception as e:
