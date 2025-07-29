@@ -1,0 +1,13 @@
+name: Keep Alive Ping
+
+on:
+  schedule:
+    - cron: '0 22 * * *'  # เวลา 05:00 น. (ไทย) ปลุกระบบทุกวัน
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wake GitHub Actions
+        run: echo "Ping to keep workflow schedule active"
