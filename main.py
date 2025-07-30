@@ -18,7 +18,6 @@ LINE_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_API_URL = "https://api.line.me/v2/bot/message/broadcast"
 HISTORICAL_EXCEL_PATH = "data/dam_discharge_history.xlsx"
 
-
 # --- ดึงระดับน้ำอินทร์บุรี ---
 def get_singburi_data(url):
     driver = None
@@ -53,7 +52,6 @@ def get_singburi_data(url):
         if driver:
             driver.quit()
 
-
 # --- ดึงข้อมูล discharge จากเว็บ HII ---
 def fetch_chao_phraya_dam_discharge():
     try:
@@ -75,9 +73,7 @@ def fetch_chao_phraya_dam_discharge():
         print(f"❌ ERROR: fetch_chao_phraya_dam_discharge: {e}")
         return None
 
-
 # --- วิเคราะห์ข้อมูลและสร้างข้อความแจ้งเตือน ---
-
 def get_previous_year_discharge():
     try:
         now = datetime.now(pytz.timezone('Asia/Bangkok'))
@@ -96,7 +92,6 @@ def get_previous_year_discharge():
     except Exception as e:
         print(f"❌ ERROR: get_previous_year_discharge: {e}")
         return None
-
 
 def analyze_and_create_message(inburi_level, dam_discharge):
     if inburi_level is None or dam_discharge is None:
@@ -127,11 +122,11 @@ def analyze_and_create_message(inburi_level, dam_discharge):
         f"ประจำวันที่: {now.strftime('%d/%m/%Y %H:%M')} น.\n\n"
         f"• ระดับน้ำ (อินทร์บุรี): {inburi_level:.2f} ม.รทก.\n"
         f"  (ต่ำกว่าตลิ่งประมาณ {distance_to_bank:.2f} ม.)\n"
-        f"• เขื่อนเจ้าพระยา (วันนี้): {dam_discharge:,.0f} ลบ.ม./วินาที\n"f"{prev_discharge_text}\n"
+        f"• เขื่อนเจ้าพระยา (วันนี้): {dam_discharge:,.0f} ลบ.ม./วินาที\n"
+        f"{prev_discharge_text}"
         f"{recommendation}"
     )
     return message
-
 
 # --- ส่งข้อความ Broadcast LINE ---
 def send_line_broadcast(message):
@@ -151,7 +146,6 @@ def send_line_broadcast(message):
         print("✅ ส่งข้อความ Broadcast สำเร็จ!")
     except Exception as e:
         print(f"❌ ERROR: LINE Broadcast: {e}")
-
 
 # --- Main ---
 if __name__ == "__main__":
