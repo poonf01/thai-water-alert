@@ -127,7 +127,7 @@ def analyze_and_create_message(inburi_level, dam_discharge):
         f"ประจำวันที่: {now.strftime('%d/%m/%Y %H:%M')} น.\n\n"
         f"• ระดับน้ำ (อินทร์บุรี): {inburi_level:.2f} ม.รทก.\n"
         f"  (ต่ำกว่าตลิ่งประมาณ {distance_to_bank:.2f} ม.)\n"
-        f"• เขื่อนเจ้าพระยา (ข้อมูลอ้างอิง): {dam_discharge:,.0f} ลบ.ม./วินาที\n\n"
+        f"• เขื่อนเจ้าพระยา (วันนี้): {dam_discharge:,.0f} ลบ.ม./วินาที\n"f"{prev_discharge_text}\n"
         f"{recommendation}"
     )
     return message
