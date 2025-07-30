@@ -11,14 +11,12 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
-# --- ค่าคงที่ ---
 SINGBURI_WATER_URL = "https://singburi.thaiwater.net/wl"
 DISCHARGE_URL = "https://tiwrm.hii.or.th/DATA/REPORT/php/chart/chaopraya/small/chaopraya.php"
 LINE_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_API_URL = "https://api.line.me/v2/bot/message/broadcast"
 HISTORICAL_EXCEL_PATH = "data/dam_discharge_history.xlsx"
 
-# --- ดึงระดับน้ำอินทร์บุรี ---
 def get_singburi_data(url):
     driver = None
     try:
@@ -52,14 +50,12 @@ def get_singburi_data(url):
         if driver:
             driver.quit()
 
-# --- ดึงข้อมูล discharge จากเว็บ HII ---
 def fetch_chao_phraya_dam_discharge():
     try:
         res = requests.get(DISCHARGE_URL, timeout=30)
         res.raise_for_status()
         soup = BeautifulSoup(res.text, 'html.parser')
         strong_tags = soup.find_all("strong")
-
         for tag in strong_tags:
             if "ท้ายเขื่อนเจ้าพระยา" in tag.text:
                 table = tag.find_parent("table")
@@ -73,35 +69,51 @@ def fetch_chao_phraya_dam_discharge():
         print(f"❌ ERROR: fetch_chao_phraya_dam_discharge: {e}")
         return None
 
-# --- วิเคราะห์ข้อมูลและสร้างข้อความแจ้งเตือน ---
-def get_previous_year_discharge():
+def get_history_discharge():
+    """
+    คืนค่า dict {ปี: ปริมาณน้ำ} เฉพาะปี 2567 กับ 2554
+    """
     try:
         now = datetime.now(pytz.timezone('Asia/Bangkok'))
         day = now.day
-        month = now.month
-        year_last = now.year - 1
+        month_en = now.strftime('%B')
+        month_map = {
+            'January': 'มกราคม', 'February': 'กุมภาพันธ์', 'March': 'มีนาคม',
+            'April': 'เมษายน', 'May': 'พฤษภาคม', 'June': 'มิถุนายน',
+            'July': 'กรกฎาคม', 'August': 'สิงหาคม', 'September': 'กันยายน',
+            'October': 'ตุลาคม', 'November': 'พฤศจิกายน', 'December': 'ธันวาคม'
+        }
+        month_th = month_map[month_en]
 
         df = pd.read_excel(HISTORICAL_EXCEL_PATH)
-        if str(year_last) not in df.columns:
-            return None
 
-        match = df[(df['วัน'] == day) & (df['เดือน'] == month)]
-        if not match.empty:
-            return match[str(year_last)].values[0]
-        return None
+        years_check = [2567, 2554]
+        result = {}
+        for year_th in years_check:
+            match = df[
+                (df['วันที่'] == day) &
+                (df['เดือน'] == month_th) &
+                (df['ปี'] == year_th)
+            ]
+            result[year_th] = match['ปริมาณน้ำ (ลบ.ม./วิ)'].values[0] if not match.empty else None
+        return result
     except Exception as e:
-        print(f"❌ ERROR: get_previous_year_discharge: {e}")
-        return None
+        print(f"❌ ERROR: get_history_discharge: {e}")
+        return {}
 
 def analyze_and_create_message(inburi_level, dam_discharge):
     if inburi_level is None or dam_discharge is None:
         return "เกิดข้อผิดพลาด: ไม่สามารถดึงข้อมูลได้ครบ กรุณาตรวจสอบระบบ"
 
     bank_height = 13.0
-    prev_year_discharge = get_previous_year_discharge()
-    prev_discharge_text = f"• ปีที่แล้ว (วันเดียวกัน): {prev_year_discharge:,.0f} ลบ.ม./วินาที\n" if prev_year_discharge else ""
-    distance_to_bank = bank_height - inburi_level
+    history = get_history_discharge()
+    prev_discharge_text = ""
+    if history.get(2567):
+        prev_discharge_text += f"• ปีที่แล้ว (2567): {history[2567]:,.0f} ลบ.ม./วินาที\n"
+    if history.get(2554):
+        prev_discharge_text += f"• ปี 2554: {history[2554]:,.0f} ลบ.ม./วินาที\n"
 
+    distance_to_bank = bank_height - inburi_level
     if dam_discharge > 2400 or distance_to_bank < 1.0:
         status_emoji = "🟥"
         status_title = "‼️ ประกาศเตือนภัยระดับสูงสุด ‼️"
@@ -128,7 +140,6 @@ def analyze_and_create_message(inburi_level, dam_discharge):
     )
     return message
 
-# --- ส่งข้อความ Broadcast LINE ---
 def send_line_broadcast(message):
     if not LINE_TOKEN:
         print("❌ ไม่พบ LINE_CHANNEL_ACCESS_TOKEN!")
@@ -147,7 +158,6 @@ def send_line_broadcast(message):
     except Exception as e:
         print(f"❌ ERROR: LINE Broadcast: {e}")
 
-# --- Main ---
 if __name__ == "__main__":
     print("=== เริ่มการทำงานระบบแจ้งเตือนน้ำอินทร์บุรี (Full Version) ===")
     inburi_level = get_singburi_data(SINGBURI_WATER_URL)
