@@ -79,7 +79,7 @@ def fetch_chao_phraya_dam_discharge():
 # --- เปรียบเทียบกับวันเดียวกันของปีก่อน ---
 def compare_with_last_year(today_discharge):
     try:
-        df = pd.read_excel("data/dam_discharge_history.xlsx")
+        df = pd.read_excel("data/dam_discharge_history.xlsx", engine="openpyxl")
         df.columns = [str(c).strip() for c in df.columns]
 
         thai_months = {
