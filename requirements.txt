@@ -1,8 +1,7 @@
+openpyxl
+pandas
 requests
-python-dotenv
-pillow
-pytz
 beautifulsoup4
 selenium
 webdriver-manager
-pandas
+pytz
