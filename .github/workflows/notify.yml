@@ -2,7 +2,8 @@ name: Notify Water Alert
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # ปรับเวลาตามต้องการ เช่น ทุกวันเวลา 07:00 AM (ตาม UTC)
+    - cron: '30 0 * * *'   # 07:30 ไทย (00:30 UTC)
+    - cron: '30 9 * * *'   # 16:30 ไทย (09:30 UTC)
   workflow_dispatch:
 
 jobs:
