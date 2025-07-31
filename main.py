@@ -17,7 +17,7 @@ from selenium.webdriver.support import expected_conditions as EC
 # --- ค่าคงที่ ---
 SINGBURI_URL = "https://singburi.thaiwater.net/wl"
 DISCHARGE_URL = 'https://tiwrm.hii.or.th/DATA/REPORT/php/chart/chaopraya/small/chaopraya.php'
-HISTORICAL_DATA_FILE = 'dam_discharge_history.xlsx - Sheet1.csv' # <-- ชื่อไฟล์ข้อมูลย้อนหลัง
+HISTORICAL_DATA_FILE ='data/dam_discharge_history.xlsx - Sheet1.csv' # <-- ชื่อไฟล์ข้อมูลย้อนหลัง
 LINE_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_API_URL = "https://api.line.me/v2/bot/message/broadcast"
 
