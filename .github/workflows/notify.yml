@@ -2,42 +2,34 @@
 name: Send Daily Water Level Notification
 
 on:
-  # 1. ตั้งเวลาให้ทำงานอัตโนมัติ
   schedule:
     # ทำงานทุกวันเวลา 07:30 และ 16:30 ตามเวลาประเทศไทย (UTC+7)
     - cron: '30 0,9 * * *'
-
-  # 2. อนุญาตให้กดรันเองได้
+  # อนุญาตให้กดรันเองได้เพื่อการทดสอบ
   workflow_dispatch:
 
 jobs:
   run-python-script:
     runs-on: ubuntu-latest
-
     steps:
-      # 1. Checkout โค้ดจาก Repository
       - name: Check out repository code
         uses: actions/checkout@v4
 
-      # 2. ตั้งค่า Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      # 3. ติดตั้งไลบรารี Python จาก requirements.txt
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # 4. (ส่วนแก้ไข) ติดตั้ง Chrome และ ChromeDriver ที่เวอร์ชันตรงกันอัตโนมัติ
+      # ส่วนสำคัญ: ติดตั้ง Chrome และ Driver ที่เวอร์ชันตรงกันอัตโนมัติ
       - name: Set up Chrome and ChromeDriver
         uses: browser-actions/setup-chrome@v1
 
-      # 5. รันสคริปต์ Python
       - name: Run Python script
         env:
-          # ดึง Token มาจาก Secrets ของ Repository
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
         run: python main.py
