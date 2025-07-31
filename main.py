@@ -9,14 +9,14 @@ from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
+from webdriver_manager.chrome import ChromeDriverManager, ChromeType
 import random
 import re
 import time
 
 # --- URL ที่อัปเดตใหม่ตามไฟล์ที่ถูกต้อง ---
 # แหล่งข้อมูลระดับน้ำ อ.อินทร์บุรี (จาก inburi_bridge_alert.py)
-INBURI_WATER_URL = "https://www.thaiwater.net/water/wl"
+INBURI_WATER_URL = "https://singburi.thaiwater.net/wl"
 # แหล่งข้อมูลการระบายน้ำเขื่อนเจ้าพระยา (จาก scraper.py)
 DISCHARGE_URL = "https://www.thaiwater.net/water/dam/large"
 
@@ -39,7 +39,7 @@ def get_inburi_bridge_level():
         options.add_argument("--window-size=1920,1080") # เพิ่มขนาดหน้าต่างเพื่อช่วยในการโหลด
 
         print("กำลังเริ่มต้น ChromeDriver...")
-        driver = webdriver.Chrome(service=ChromeService("/usr/local/bin/chromedriver"), options=options)
+        driver = webdriver.Chrome(service=ChromeService("chromedriver-linux64/chromedriver"), options=options)
         driver.set_page_load_timeout(180)
         print(f"กำลังเข้าถึง URL: {INBURI_WATER_URL}")
         driver.get(INBURI_WATER_URL)
@@ -56,25 +56,20 @@ def get_inburi_bridge_level():
             print("ไม่พบ MuiCircularProgress-root หรือโหลดเสร็จสิ้นแล้ว")
 
         # ลองหาตารางด้วย class "MuiTable-root" ตามที่ผู้ใช้ให้มา
-        table = wait.until(EC.presence_of_element_located((By.CLASS_NAME, "MuiTable-root")))
-        print("พบตารางข้อมูลแล้ว")
+        # table = wait.until(EC.presence_of_element_located((By.CLASS_NAME, "MuiTable-root")))
+        # print("พบตารางข้อมูลแล้ว")
         
-        # ค้นหาแถวที่มีข้อความ "สถานีอินทร์บุรี"
-        # จากภาพ HTML ที่ผู้ใช้ให้มา, 'สถานีอินทร์บุรี' อยู่ใน <th> และระดับน้ำอยู่ใน <td> ที่ 3 (index 2) ของแถวนั้น
-        rows = table.find_elements(By.XPATH, ".//tr[contains(@class, \'MuiTableRow-root\')]")
-        for row in rows:
-            try:
-                # ค้นหา <th> ที่มีข้อความ "สถานีอินทร์บุรี"
-                station_header = row.find_element(By.XPATH, ".//th[contains(text(), \'สถานีอินทร์บุรี\')]")
-                if station_header:
-                    # ถ้าพบ <th> ที่มีข้อความ "สถานีอินทร์บุรี" ให้ดึงข้อมูลจาก <td> ในแถวนั้น
-                    cells = row.find_elements(By.XPATH, ".//td[contains(@class, \'MuiTableCell-root\')]")
-                    if len(cells) > 2:
-                        level_str = cells[2].text.strip()
-                        print(f"พบระดับน้ำสำหรับสถานีอินทร์บุรี: {level_str}")
-                        return float(level_str)
-            except Exception as e:
-                pass # ไม่ต้องทำอะไรถ้าไม่พบ element ในแถวนั้นๆ
+        # ค้นหาแถวที่มีข้อความ "สถานีอินทร์บุรี" โดยใช้ th[scope='row'] ตาม inburi_bridge_alert.py
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "th[scope=\'row\']")))
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        for th in soup.select("th[scope=\'row\']"):
+            if "อินทร์บุรี" in th.get_text(strip=True):
+                tr = th.find_parent("tr")
+                cols = tr.find_all("td")
+                if len(cols) > 1:
+                    water_level = float(cols[2].get_text(strip=True)) # ระดับน้ำอยู่ที่ cols[2] ในโครงสร้างใหม่
+                    print(f"พบระดับน้ำสำหรับสถานีอินทร์บุรี: {water_level}")
+                    return water_level
         
         print("ไม่พบข้อมูลสถานีอินทร์บุรีในตาราง")
         return None
