@@ -11,15 +11,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # --- ส่วนที่เพิ่มเข้ามา ---
+      # ติดตั้ง Google Chrome และ ChromeDriver ที่เข้ากันได้
+      - name: Setup Chrome
+        uses: browser-actions/setup-chrome@v1
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      # ติดตั้ง library ที่จำเป็นสำหรับ Chrome/Selenium
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libnss3 libfontconfig1
 
       - name: Install Python dependencies
         run: |
