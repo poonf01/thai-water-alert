@@ -41,8 +41,12 @@ def get_inburi_data(url: str, timeout: int = 30):
                 tr = th.find_parent("tr")
                 cols = tr.find_all("td")
                 water_level = float(cols[1].get_text(strip=True))
-                bank_level = float(cols[2].get_text(strip=True))
-                print(f"✅ พบข้อมูลอินทร์บุรี: ระดับน้ำ={water_level}, ระดับตลิ่ง={bank_level}")
+                
+                # --- จุดที่แก้ไข ---
+                # กำหนดระดับตลิ่งเป็น 13.0 เมตรโดยประมาณตามที่ร้องขอ
+                bank_level = 13.0
+                
+                print(f"✅ พบข้อมูลอินทร์บุรี: ระดับน้ำ={water_level}, ระดับตลิ่ง={bank_level} (ค่าโดยประมาณ)")
                 return water_level, bank_level
         print("⚠️ ไม่พบข้อมูลสถานี 'อินทร์บุรี' ในตาราง")
         return None, None
@@ -71,8 +75,6 @@ def fetch_chao_phraya_dam_discharge(url: str, timeout: int = 30):
         
         water_storage = data[0]['itc_water']['C13']['storage']
         if water_storage:
-            # --- จุดที่แก้ไข ---
-            # แปลงเป็น string, ลบ comma, แล้วค่อยแปลงเป็น float
             value = float(str(water_storage).replace(',', ''))
             print(f"✅ พบข้อมูลเขื่อนเจ้าพระยา: {value}")
             return value
