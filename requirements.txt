@@ -1,6 +1,5 @@
-playwright
 requests
 beautifulsoup4
+selenium
+webdriver-manager
 pytz
-openpyxl
-pandas
