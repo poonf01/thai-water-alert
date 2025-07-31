@@ -12,8 +12,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # --- ส่วนที่เพิ่มเข้ามา ---
-      # ติดตั้ง Google Chrome และ ChromeDriver ที่เข้ากันได้
+      # --- ส่วนสำคัญที่แก้ไข ---
+      # เปลี่ยนมาใช้วิธีนี้เพื่อติดตั้ง Chrome และ Driver ให้พร้อม
       - name: Setup Chrome
         uses: browser-actions/setup-chrome@v1
 
