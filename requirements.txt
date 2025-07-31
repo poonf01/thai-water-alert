@@ -4,3 +4,8 @@ requests
 beautifulsoup4
 selenium
 pytz
+requests
+beautifulsoup4
+selenium
+webdriver-manager
+pytz
