@@ -20,9 +20,43 @@ from selenium.common.exceptions import StaleElementReferenceException
 # --- ค่าคงที่ ---
 SINGBURI_URL = "https://singburi.thaiwater.net/wl"
 DISCHARGE_URL = 'https://tiwrm.hii.or.th/DATA/REPORT/php/chart/chaopraya/small/chaopraya.php'
-HISTORICAL_DATA_FILE = 'data/dam_discharge_history_complete.csv'
+# HISTORICAL_DATA_FILE = 'data/dam_discharge_history_complete.csv' # No longer needed
 LINE_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_API_URL = "https://api.line.me/v2/bot/message/broadcast"
+
+# -- อ่านข้อมูลย้อนหลังจาก Excel --
+THAI_MONTHS = {
+    'มกราคม':1, 'กุมภาพันธ์':2, 'มีนาคม':3, 'เมษายน':4,
+    'พฤษภาคม':5, 'มิถุนายน':6, 'กรกฎาคม':7, 'สิงหาคม':8,
+    'กันยายน':9, 'ตุลาคม':10, 'พฤศจิกายน':11, 'ธันวาคม':12
+}
+def get_historical_from_excel(year_be: int) -> int | None:
+    """
+    อ่านไฟล์ data/ระดับน้ำปี{year_be}.xlsx
+    คืนค่า discharge (ลบ.ม./วิ) ของวัน–เดือน ปัจจุบัน
+    """
+    path = f"data/ระดับน้ำปี{year_be}.xlsx"
+    try:
+        if not os.path.exists(path):
+            print(f"⚠️ ไม่พบไฟล์ข้อมูลย้อนหลังที่: {path}")
+            return None
+        df = pd.read_excel(path)
+        # สมมติคอลัมน์ ['วันที่','เดือน','ปริมาณน้ำ (ลบ.ม./วิ)']
+        df = df.rename(columns={'ปริมาณน้ำ (ลบ.ม./วิ)': 'discharge'})
+        df['month_num'] = df['เดือน'].map(THAI_MONTHS)
+
+        now = datetime.now(pytz.timezone('Asia/Bangkok'))
+        today_d, today_m = now.day, now.month
+        match = df[(df['วันที่']==today_d) & (df['month_num']==today_m)]
+        if not match.empty:
+            print(f"✅ พบข้อมูลย้อนหลังสำหรับปี {year_be}: {int(match.iloc[0]['discharge'])} ลบ.ม./วินาที")
+            return int(match.iloc[0]['discharge'])
+        else:
+            print(f"⚠️ ไม่พบข้อมูลสำหรับวันที่ {today_d}/{today_m} ในไฟล์ปี {year_be}")
+            return None
+    except Exception as e:
+        print(f"❌ ERROR: ไม่สามารถโหลดข้อมูลย้อนหลังจาก Excel ได้ ({path}): {e}")
+        return None
 
 # --- ดึงระดับน้ำอินทร์บุรี ---
 def get_inburi_data(url: str, timeout: int = 45, retries: int = 3):
@@ -103,55 +137,12 @@ def fetch_chao_phraya_dam_discharge(url: str, timeout: int = 30):
         print(f"❌ ERROR: fetch_chao_phraya_dam_discharge: {e}")
     return None
 
-# --- อ่านและเตรียมข้อมูลย้อนหลัง ---
-def load_historical_data(file_path: str):
-    try:
-        if not os.path.exists(file_path):
-            print(f"⚠️ ไม่พบไฟล์ข้อมูลย้อนหลังที่: {file_path}")
-            return None
-
-        df = pd.read_csv(file_path)
-        df.rename(columns={'ปริมาณน้ำ (ลบ.ม./วินาที)': 'discharge_rate'}, inplace=True)
-        
-        thai_month_map = {
-            'มกราคม': 1, 'กุมภาพันธ์': 2, 'มีนาคม': 3, 'เมษายน': 4, 
-            'พฤษภาคม': 5, 'มิถุนายน': 6, 'กรกฎาคม': 7, 'สิงหาคม': 8, 
-            'กันยายน': 9, 'ตุลาคม': 10, 'พฤศจิกายน': 11, 'ธันวาคม': 12
-        }
-        df['month_num'] = df['เดือน'].map(thai_month_map)
-        
-        df['ad_date'] = pd.to_datetime((df['ปี'] - 543).astype(str) + '-' + df['month_num'].astype(str) + '-' + df['วันที่'].astype(str), errors='coerce')
-        df.dropna(subset=['ad_date'], inplace=True)
-        
-        print("✅ เตรียมข้อมูลย้อนหลังสำเร็จ")
-        return df
-    except Exception as e:
-        print(f"❌ ERROR: ไม่สามารถโหลดข้อมูลย้อนหลังได้: {e}")
-        return None
-
-# --- ค้นหาข้อมูลย้อนหลัง ---
-def find_historical_discharge(df: pd.DataFrame, target_date: datetime):
-    try:
-        if df is None or df.empty:
-            return None
-        
-        closest_row = df.iloc[(df['ad_date'] - target_date).abs().argsort()[:1]]
-        
-        if not closest_row.empty:
-            historical_discharge = closest_row['discharge_rate'].iloc[0]
-            print(f"✅ พบข้อมูลย้อนหลังสำหรับวันที่ {target_date.strftime('%Y-%m-%d')}: {historical_discharge}")
-            return historical_discharge
-        return None
-    except Exception as e:
-        print(f"❌ ERROR: find_historical_discharge ({target_date.year}): {e}")
-        return None
-
 # --- วิเคราะห์และสร้างข้อความ ---
 def analyze_and_create_message(inburi_level, dam_discharge, bank_height, hist_2567=None, hist_2554=None):
     distance_to_bank = bank_height - inburi_level
     
-    hist_2567_text = f"\n  (เทียบปี 2567: {hist_2567:,.0f} ลบ.ม./วินาที)" if hist_2567 is not None else ""
-    hist_2554_text = f"\n  (เทียบปี 2554: {hist_2554:,.0f} ลบ.ม./วินาที)" if hist_2554 is not None else ""
+    # hist_2567_text = f"\n  (เทียบปี 2567: {hist_2567:,.0f} ลบ.ม./วินาที)" if hist_2567 is not None else ""
+    # hist_2554_text = f"\n  (เทียบปี 2554: {hist_2554:,.0f} ลบ.ม./วินาที)" if hist_2554 is not None else ""
     
     if dam_discharge > 2400 or distance_to_bank < 1.0:
         status_emoji = "🟥"
@@ -167,17 +158,24 @@ def analyze_and_create_message(inburi_level, dam_discharge, bank_height, hist_25
         recommendation = "สถานการณ์น้ำยังปกติ ใช้ชีวิตได้ตามปกติครับ"
 
     now = datetime.now(pytz.timezone('Asia/Bangkok'))
-    message = (
-        f"{status_emoji} {status_title}\n"
-        f"รายงานสถานการณ์น้ำเจ้าพระยา อ.อินทร์บุรี\n"
-        f"ประจำวันที่: {now.strftime('%d/%m/%Y %H:%M')} น.\n\n"
-        f"• ระดับน้ำ (อินทร์บุรี): {inburi_level:.2f} ม.รทก.\n"
-        f"  (ต่ำกว่าตลิ่งประมาณ {distance_to_bank:.2f} ม.)\n"
-        f"  (ระดับตลิ่ง: {bank_height:.2f} ม.รทก.)\n"
-        f"• เขื่อนเจ้าพระยา: {dam_discharge:,.0f} ลบ.ม./วินาที{hist_2567_text}{hist_2554_text}\n\n"
-        f"{recommendation}"
-    )
-    return message
+    
+    msg_lines = []
+    msg_lines.append(f"{status_emoji} {status_title}")
+    msg_lines.append(f"รายงานสถานการณ์น้ำเจ้าพระยา อ.อินทร์บุรี")
+    msg_lines.append(f"ประจำวันที่: {now.strftime('%d/%m/%Y %H:%M')} น.\n")
+    msg_lines.append(f"• ระดับน้ำ (อินทร์บุรี): {inburi_level:.2f} ม.รทก.")
+    msg_lines.append(f"  (ต่ำกว่าตลิ่งประมาณ {distance_to_bank:.2f} ม.)")
+    msg_lines.append(f"  (ระดับตลิ่ง: {bank_height:.2f} ม.รทก.)")
+    msg_lines.append(f"• เขื่อนเจ้าพระยา: {dam_discharge:,.0f} ลบ.ม./วินาที")
+
+    if hist_2567 is not None:
+        msg_lines.append(f"  (เทียบปี 2567: {hist_2567:,} ลบ.ม./วินาที)")
+    if hist_2554 is not None:
+        msg_lines.append(f"  (เทียบปี 2554: {hist_2554:,} ลบ.ม./วินาที)")
+    
+    msg_lines.append(f"\n{recommendation}")
+
+    return "\n".join(msg_lines)
 
 # --- สร้างข้อความ Error ---
 def create_error_message(inburi_status, discharge_status):
@@ -214,14 +212,9 @@ if __name__ == "__main__":
     inburi_level, bank_level = get_inburi_data(inburi_cache_buster_url)
     dam_discharge = fetch_chao_phraya_dam_discharge(DISCHARGE_URL)
     
-    historical_df = load_historical_data(HISTORICAL_DATA_FILE)
-    
-    today = datetime.now(pytz.timezone('Asia/Bangkok'))
-    target_date_2024 = today.replace(year=2024)
-    target_date_2011 = today.replace(year=2011)
-    
-    hist_2567 = find_historical_discharge(historical_df, target_date_2024)
-    hist_2554 = find_historical_discharge(historical_df, target_date_2011)
+    # ดึงข้อมูลย้อนหลังจาก Excel
+    hist_2567 = get_historical_from_excel(2567)
+    hist_2554 = get_historical_from_excel(2554)
 
     if inburi_level is not None and bank_level is not None and dam_discharge is not None:
         final_message = analyze_and_create_message(inburi_level, dam_discharge, bank_level, hist_2567, hist_2554)
