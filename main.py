@@ -41,8 +41,9 @@ def get_historical_from_excel(year_be: int) -> int | None:
             print(f"⚠️ ไม่พบไฟล์ข้อมูลย้อนหลังที่: {path}")
             return None
         df = pd.read_excel(path)
-        # สมมติคอลัมน์ ['วันที่','เดือน','ปริมาณน้ำ (ลบ.ม./วิ)']
-        df = df.rename(columns={'ปริมาณน้ำ (ลบ.ม./วิ)': 'discharge'})
+        # เปลี่ยนเป็นแม็ปชื่อคอลัมน์ให้ตรงกับไฟล์ Excel จริง
+        # (ดูชื่อ header ในไฟล์ว่าตรงนี้คือ 'ปริมาณน้ำ (ลบ.ม./วินาที)')
+        df = df.rename(columns={'ปริมาณน้ำ (ลบ.ม./วินาที)': 'discharge'})
         df['month_num'] = df['เดือน'].map(THAI_MONTHS)
 
         now = datetime.now(pytz.timezone('Asia/Bangkok'))
@@ -140,9 +141,6 @@ def fetch_chao_phraya_dam_discharge(url: str, timeout: int = 30):
 # --- วิเคราะห์และสร้างข้อความ ---
 def analyze_and_create_message(inburi_level, dam_discharge, bank_height, hist_2567=None, hist_2554=None):
     distance_to_bank = bank_height - inburi_level
-    
-    # hist_2567_text = f"\n  (เทียบปี 2567: {hist_2567:,.0f} ลบ.ม./วินาที)" if hist_2567 is not None else ""
-    # hist_2554_text = f"\n  (เทียบปี 2554: {hist_2554:,.0f} ลบ.ม./วินาที)" if hist_2554 is not None else ""
     
     if dam_discharge > 2400 or distance_to_bank < 1.0:
         status_emoji = "🟥"
