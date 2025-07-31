@@ -31,7 +31,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # 4. (ส่วนที่แก้ไข) ติดตั้ง Chrome และ ChromeDriver ที่เวอร์ชันตรงกันอัตโนมัติ
+      # 4. (ส่วนแก้ไข) ติดตั้ง Chrome และ ChromeDriver ที่เวอร์ชันตรงกันอัตโนมัติ
       - name: Set up Chrome and ChromeDriver
         uses: browser-actions/setup-chrome@v1
 
