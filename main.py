@@ -3,14 +3,7 @@ import os
 from datetime import datetime
 import pytz
 from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service as ChromeService
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-
-# ไม่ต้องใช้ webdriver_manager แล้ว
-# from webdriver_manager.chrome import ChromeDriverManager
+from playwright.sync_api import sync_playwright
 
 # --- ค่าคงที่ ---
 SINGBURI_WATER_URL = "https://singburi.thaiwater.net/wl"
@@ -19,40 +12,30 @@ LINE_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_API_URL = "https://api.line.me/v2/bot/message/broadcast"
 
 
-# --- ดึงระดับน้ำอินทร์บุรี ---
+# --- ดึงระดับน้ำอินทร์บุรี (Rewritten with Playwright) ---
 def get_singburi_data(url):
     """
-    ดึงข้อมูลจากเว็บ singburi.thaiwater.net โดยใช้ Selenium 4 แบบใหม่
+    ดึงข้อมูลจากเว็บ singburi.thaiwater.net โดยใช้ Playwright
     """
-    driver = None
     try:
-        options = webdriver.ChromeOptions()
-        options.add_argument("--headless")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--window-size=1920,1080")
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.goto(url, timeout=120000)
+            
+            # รอจนกว่าตารางข้อมูลจะปรากฏ
+            page.wait_for_selector("div[aria-labelledby='waterLevel'] table tr", timeout=60000)
+            
+            html = page.content()
+            browser.close()
 
-        # --- ส่วนที่เปลี่ยนแปลง ---
-        # เราไม่ต้องใช้ ChromeDriverManager อีกต่อไป
-        # Selenium 4 จะจัดการหา Chrome และ ChromeDriver ที่เข้ากันได้ให้เอง
-        driver = webdriver.Chrome(options=options)
-        
-        driver.set_page_load_timeout(240)
-        driver.get(url)
-        wait = WebDriverWait(driver, 120)
-        
-        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div[aria-labelledby='waterLevel'] table")))
-
-        soup = BeautifulSoup(driver.page_source, 'html.parser')
-        
+        soup = BeautifulSoup(html, 'html.parser')
         water_table = soup.find("div", attrs={"aria-labelledby": "waterLevel"})
         if not water_table:
             print("⚠️ ไม่พบตารางข้อมูลระดับน้ำหลัก (div[aria-labelledby='waterLevel'])")
             return None, None
             
         rows = water_table.find_all("tr")
-
         for row in rows:
             station_header = row.find("th")
             if station_header and "อินทร์บุรี" in station_header.get_text(strip=True):
@@ -68,9 +51,6 @@ def get_singburi_data(url):
     except Exception as e:
         print(f"❌ ERROR: get_singburi_data: {e}")
         return None, None
-    finally:
-        if driver:
-            driver.quit()
 
 
 # --- ดึงข้อมูล discharge จากเว็บ HII ---
@@ -84,7 +64,6 @@ def fetch_chao_phraya_dam_discharge():
         soup = BeautifulSoup(res.text, 'html.parser')
 
         header_cell = soup.find(lambda tag: tag.name == 'td' and 'ปริมาณน้ำ' in tag.text)
-        
         if header_cell:
             value_cell = header_cell.find_next_sibling('td')
             if value_cell:
