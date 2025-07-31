@@ -15,22 +15,18 @@ jobs:
         with:
           python-version: '3.11'
 
+      # ติดตั้ง library ที่จำเป็นสำหรับ Chrome/Selenium
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libnss3 libfontconfig1
+
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
-      - name: Install Playwright Browsers
-        run: playwright install chromium
-
+      
       - name: Run Python Script
         run: python main.py
         env:
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
-      
-      - name: Upload debug screenshot on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: debug-screenshot
-          path: debug_screenshot.png
