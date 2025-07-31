@@ -29,19 +29,19 @@ def get_singburi_data(url):
         options.add_argument("--headless")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--window-size=1920,1080")
 
         driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
-        driver.set_page_load_timeout(180)
+        
+        driver.set_page_load_timeout(240) # เพิ่มเวลารอโหลดหน้าเว็บเป็น 4 นาที
         driver.get(url)
-
-        # รอจนกว่าตารางจะโหลดเสร็จ
-        wait = WebDriverWait(driver, 60)
-        # เราจะรอให้ตารางทั้งอันโหลดเสร็จ โดยหาจาก id ของตารางที่เห็นใน DevTools
+        wait = WebDriverWait(driver, 120) # เพิ่มเวลารอ element เป็น 2 นาที
+        
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div[aria-labelledby='waterLevel'] table")))
 
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         
-        # ค้นหาตารางหลักที่มีข้อมูลระดับน้ำโดยตรง
         water_table = soup.find("div", attrs={"aria-labelledby": "waterLevel"})
         if not water_table:
             print("⚠️ ไม่พบตารางข้อมูลระดับน้ำหลัก (div[aria-labelledby='waterLevel'])")
@@ -53,10 +53,9 @@ def get_singburi_data(url):
             station_header = row.find("th")
             if station_header and "อินทร์บุรี" in station_header.get_text(strip=True):
                 tds = row.find_all("td")
-                # จาก HTML ใหม่ เราต้องการข้อมูลจาก <td> ที่ 2 และ 3
                 if len(tds) > 2:
-                    level_str = tds[1].text.strip() # ระดับน้ำ (ม.รทก.)
-                    bank_level_str = tds[2].text.strip() # ระดับตลิ่ง
+                    level_str = tds[1].text.strip()
+                    bank_level_str = tds[2].text.strip()
                     print(f"✅ พบข้อมูลอินทร์บุรี: ระดับน้ำ={level_str}, ระดับตลิ่ง={bank_level_str}")
                     return float(level_str), float(bank_level_str)
                     
