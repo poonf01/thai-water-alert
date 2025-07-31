@@ -80,7 +80,7 @@ def fetch_chao_phraya_dam_discharge(url: str, timeout: int = 30):
         print(f"❌ ERROR: fetch_chao_phraya_dam_discharge: {e}")
     return None
 
-# --- ฟังก์ชันดึงข้อมูลย้อนหลังตามปีที่ระบุ ---
+# --- ฟังก์ชันดึงข้อมูลย้อนหลัง (อัปเดตให้แปลงชื่อเดือน) ---
 def get_historical_data_for_year(target_year: int, file_path: str):
     try:
         if not os.path.exists(file_path):
@@ -88,8 +88,18 @@ def get_historical_data_for_year(target_year: int, file_path: str):
             return None
 
         df = pd.read_csv(file_path)
-        # สร้างคอลัมน์ date จาก 'วันที่', 'เดือน', 'ปี'
-        # หมายเหตุ: แก้ไขชื่อคอลัมน์ตามไฟล์ CSV ของคุณ
+
+        # --- จุดที่แก้ไข ---
+        # สร้าง Dictionary สำหรับแปลงชื่อเดือนไทยเป็นตัวเลข
+        thai_month_map = {
+            'มกราคม': 1, 'กุมภาพันธ์': 2, 'มีนาคม': 3, 'เมษายน': 4, 
+            'พฤษภาคม': 5, 'มิถุนายน': 6, 'กรกฎาคม': 7, 'สิงหาคม': 8, 
+            'กันยายน': 9, 'ตุลาคม': 10, 'พฤศจิกายน': 11, 'ธันวาคม': 12
+        }
+        # แปลงคอลัมน์ 'เดือน' โดยใช้ map
+        df['เดือน'] = df['เดือน'].map(thai_month_map)
+
+        # สร้างคอลัมน์ date จากคอลัมน์ที่แปลงแล้ว
         df['full_date'] = pd.to_datetime(df['ปี'].astype(str) + '-' + df['เดือน'].astype(str) + '-' + df['วันที่'].astype(str), format='%Y-%m-%d')
         
         today = datetime.now(pytz.timezone('Asia/Bangkok'))
@@ -99,7 +109,6 @@ def get_historical_data_for_year(target_year: int, file_path: str):
         if target_data.empty:
             return None
 
-        # ค้นหาข้อมูลที่ใกล้วันนี้ที่สุดในปีเป้าหมาย
         closest_date_row = target_data.iloc[(target_data['full_date'] - target_date).abs().argsort()[:1]]
         
         if not closest_date_row.empty:
@@ -115,11 +124,9 @@ def get_historical_data_for_year(target_year: int, file_path: str):
 def analyze_and_create_message(inburi_level, dam_discharge, bank_height, hist_2567=None, hist_2554=None):
     distance_to_bank = bank_height - inburi_level
     
-    # สร้างส่วนแสดงข้อมูลย้อนหลัง
     hist_2567_text = f"\n  (เทียบปี 2567: {hist_2567:,.0f} ลบ.ม./วินาที)" if hist_2567 is not None else "\n  (เทียบปี 2567: ไม่มีข้อมูล)"
     hist_2554_text = f"\n  (เทียบปี 2554: {hist_2554:,.0f} ลบ.ม./วินาที)" if hist_2554 is not None else "\n  (เทียบปี 2554: ไม่มีข้อมูล)"
     
-    # ตรรกะการเตือนภัยคงเดิม
     if dam_discharge > 2400 or distance_to_bank < 1.0:
         status_emoji = "🟥"
         status_title = "‼️ ประกาศเตือนภัยระดับสูงสุด ‼️"
@@ -178,7 +185,6 @@ if __name__ == "__main__":
     inburi_level, bank_level = get_inburi_data(SINGBURI_URL)
     dam_discharge = fetch_chao_phraya_dam_discharge(DISCHARGE_URL)
     
-    # ดึงข้อมูลย้อนหลังของทั้งสองปี
     historical_2567 = get_historical_data_for_year(2024, HISTORICAL_DATA_FILE)
     historical_2554 = get_historical_data_for_year(2011, HISTORICAL_DATA_FILE)
 
