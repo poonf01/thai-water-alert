@@ -25,12 +25,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # === จุดที่แก้ไข ===
-      # แก้ไขให้ติดตั้ง ChromeDriver ด้วย (โดยการลบบรรทัด 'install-chromedriver: false' ออก)
-      # หรือจะกำหนดเป็น true ให้ชัดเจนก็ได้
+      # ++ จุดที่ต้องแก้ไขให้ถูกต้อง ++
+      # ลบบรรทัด 'install-chromedriver: false' ออก
+      # เพื่อให้ Action ติดตั้งทั้ง Chrome และ ChromeDriver
       - name: Set up Chrome and ChromeDriver
         uses: browser-actions/setup-chrome@v1
-        # Action นี้จะติดตั้งทั้งเบราว์เซอร์และไดรเวอร์เวอร์ชันที่ตรงกันให้โดยอัตโนมัติ
 
       - name: Run Python script
         env:
