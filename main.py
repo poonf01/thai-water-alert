@@ -17,11 +17,11 @@ from selenium.webdriver.support import expected_conditions as EC
 # --- ค่าคงที่ ---
 SINGBURI_URL = "https://singburi.thaiwater.net/wl"
 DISCHARGE_URL = 'https://tiwrm.hii.or.th/DATA/REPORT/php/chart/chaopraya/small/chaopraya.php'
-HISTORICAL_DATA_FILE ='data/dam_discharge_history.xlsx - Sheet1.csv' # <-- ชื่อไฟล์ข้อมูลย้อนหลัง
+HISTORICAL_DATA_FILE = 'data/dam_discharge_history.xlsx - Sheet1.csv'
 LINE_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_API_URL = "https://api.line.me/v2/bot/message/broadcast"
 
-# --- ดึงระดับน้ำอินทร์บุรี ---
+# --- ฟังก์ชันดึงข้อมูลระดับน้ำอินทร์บุรี ---
 def get_inburi_data(url: str, timeout: int = 30):
     opts = Options()
     opts.add_argument("--headless")
@@ -44,7 +44,6 @@ def get_inburi_data(url: str, timeout: int = 30):
                 cols = tr.find_all("td")
                 water_level = float(cols[1].get_text(strip=True))
                 bank_level = 13.0
-                
                 print(f"✅ พบข้อมูลอินทร์บุรี: ระดับน้ำ={water_level}, ระดับตลิ่ง={bank_level} (ค่าโดยประมาณ)")
                 return water_level, bank_level
         print("⚠️ ไม่พบข้อมูลสถานี 'อินทร์บุรี' ในตาราง")
@@ -56,7 +55,7 @@ def get_inburi_data(url: str, timeout: int = 30):
         if driver:
             driver.quit()
 
-# --- ดึงข้อมูลเขื่อนเจ้าพระยา ---
+# --- ฟังก์ชันดึงข้อมูลเขื่อนเจ้าพระยา ---
 def fetch_chao_phraya_dam_discharge(url: str, timeout: int = 30):
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
@@ -66,7 +65,7 @@ def fetch_chao_phraya_dam_discharge(url: str, timeout: int = 30):
         
         match = re.search(r'var json_data = (\[.*\]);', response.text)
         if not match:
-            print("❌ ERROR: ไม่พบข้อมูล JSON (ตัวแปร json_data) ในหน้าเว็บ")
+            print("❌ ERROR: ไม่พบข้อมูล JSON ในหน้าเว็บ")
             return None
             
         json_string = match.group(1)
@@ -77,46 +76,49 @@ def fetch_chao_phraya_dam_discharge(url: str, timeout: int = 30):
             value = float(str(water_storage).replace(',', ''))
             print(f"✅ พบข้อมูลเขื่อนเจ้าพระยา: {value}")
             return value
-            
     except Exception as e:
         print(f"❌ ERROR: fetch_chao_phraya_dam_discharge: {e}")
-        return None
     return None
 
-# --- [ฟังก์ชันใหม่] ดึงข้อมูลย้อนหลัง ---
-def get_historical_dam_data(file_path: str):
+# --- ฟังก์ชันดึงข้อมูลย้อนหลังตามปีที่ระบุ ---
+def get_historical_data_for_year(target_year: int, file_path: str):
     try:
         if not os.path.exists(file_path):
             print(f"⚠️ ไม่พบไฟล์ข้อมูลย้อนหลังที่: {file_path}")
             return None
 
         df = pd.read_csv(file_path)
-        df['date'] = pd.to_datetime(df['date'])
+        # สร้างคอลัมน์ date จาก 'วันที่', 'เดือน', 'ปี'
+        # หมายเหตุ: แก้ไขชื่อคอลัมน์ตามไฟล์ CSV ของคุณ
+        df['full_date'] = pd.to_datetime(df['ปี'].astype(str) + '-' + df['เดือน'].astype(str) + '-' + df['วันที่'].astype(str), format='%Y-%m-%d')
         
         today = datetime.now(pytz.timezone('Asia/Bangkok'))
-        last_year_date = today.replace(year=today.year - 1)
+        target_date = today.replace(year=target_year)
         
-        # ค้นหาข้อมูลที่ใกล้วันนี้ในปีที่แล้วที่สุด
-        last_year_data = df.iloc[(df['date'] - last_year_date).abs().argsort()[:1]]
+        target_data = df[df['ปี'] == target_year]
+        if target_data.empty:
+            return None
+
+        # ค้นหาข้อมูลที่ใกล้วันนี้ที่สุดในปีเป้าหมาย
+        closest_date_row = target_data.iloc[(target_data['full_date'] - target_date).abs().argsort()[:1]]
         
-        if not last_year_data.empty:
-            historical_discharge = last_year_data['discharge_rate'].iloc[0]
-            print(f"✅ พบข้อมูลย้อนหลัง ({last_year_date.strftime('%Y-%m-%d')}): {historical_discharge}")
+        if not closest_date_row.empty:
+            historical_discharge = closest_date_row['ปริมาณน้ำ (ลบ.ม./วิ)'].iloc[0]
+            print(f"✅ พบข้อมูลย้อนหลังปี {target_year}: {historical_discharge}")
             return historical_discharge
         return None
     except Exception as e:
-        print(f"❌ ERROR: get_historical_dam_data: {e}")
+        print(f"❌ ERROR: get_historical_data_for_year ({target_year}): {e}")
         return None
 
-# --- วิเคราะห์และสร้างข้อความ (อัปเดต) ---
-def analyze_and_create_message(inburi_level, dam_discharge, bank_height, historical_discharge=None):
+# --- ฟังก์ชันวิเคราะห์และสร้างข้อความ ---
+def analyze_and_create_message(inburi_level, dam_discharge, bank_height, hist_2567=None, hist_2554=None):
     distance_to_bank = bank_height - inburi_level
     
-    # เพิ่มส่วนแสดงข้อมูลย้อนหลัง
-    historical_text = ""
-    if historical_discharge is not None:
-        historical_text = f"\n  (เทียบปีที่แล้ว: {historical_discharge:,.0f} ลบ.ม./วินาที)"
-
+    # สร้างส่วนแสดงข้อมูลย้อนหลัง
+    hist_2567_text = f"\n  (เทียบปี 2567: {hist_2567:,.0f} ลบ.ม./วินาที)" if hist_2567 is not None else "\n  (เทียบปี 2567: ไม่มีข้อมูล)"
+    hist_2554_text = f"\n  (เทียบปี 2554: {hist_2554:,.0f} ลบ.ม./วินาที)" if hist_2554 is not None else "\n  (เทียบปี 2554: ไม่มีข้อมูล)"
+    
     # ตรรกะการเตือนภัยคงเดิม
     if dam_discharge > 2400 or distance_to_bank < 1.0:
         status_emoji = "🟥"
@@ -139,11 +141,12 @@ def analyze_and_create_message(inburi_level, dam_discharge, bank_height, histori
         f"• ระดับน้ำ (อินทร์บุรี): {inburi_level:.2f} ม.รทก.\n"
         f"  (ต่ำกว่าตลิ่งประมาณ {distance_to_bank:.2f} ม.)\n"
         f"  (ระดับตลิ่ง: {bank_height:.2f} ม.รทก.)\n"
-        f"• เขื่อนเจ้าพระยา (ข้อมูลอ้างอิง): {dam_discharge:,.0f} ลบ.ม./วินาที{historical_text}\n\n" # <-- เพิ่มข้อมูลย้อนหลังตรงนี้
+        f"• เขื่อนเจ้าพระยา: {dam_discharge:,.0f} ลบ.ม./วินาที{hist_2567_text}{hist_2554_text}\n\n"
         f"{recommendation}"
     )
     return message
 
+# --- ฟังก์ชันสร้างข้อความ Error ---
 def create_error_message(inburi_status, discharge_status):
     now = datetime.now(pytz.timezone('Asia/Bangkok'))
     return (
@@ -154,14 +157,12 @@ def create_error_message(inburi_status, discharge_status):
         f"กรุณาตรวจสอบ Log บน GitHub Actions เพื่อดูรายละเอียดข้อผิดพลาดครับ"
     )
 
+# --- ฟังก์ชันส่งข้อความ LINE ---
 def send_line_broadcast(message):
     if not LINE_TOKEN:
         print("❌ ไม่พบ LINE_CHANNEL_ACCESS_TOKEN!")
         return
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {LINE_TOKEN}"
-    }
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"}
     payload = {"messages": [{"type": "text", "text": message}]}
     try:
         res = requests.post(LINE_API_URL, headers=headers, json=payload, timeout=10)
@@ -170,19 +171,22 @@ def send_line_broadcast(message):
     except Exception as e:
         print(f"❌ ERROR: LINE Broadcast: {e}")
 
-# --- Main (อัปเดต) ---
+# --- Main ---
 if __name__ == "__main__":
-    print("=== เริ่มการทำงานระบบแจ้งเตือนน้ำอินทร์บุรี (Final Version) ===")
+    print("=== เริ่มการทำงานระบบแจ้งเตือนน้ำอินทร์บุรี ===")
     
     inburi_level, bank_level = get_inburi_data(SINGBURI_URL)
     dam_discharge = fetch_chao_phraya_dam_discharge(DISCHARGE_URL)
-    historical_discharge = get_historical_dam_data(HISTORICAL_DATA_FILE)
+    
+    # ดึงข้อมูลย้อนหลังของทั้งสองปี
+    historical_2567 = get_historical_data_for_year(2024, HISTORICAL_DATA_FILE)
+    historical_2554 = get_historical_data_for_year(2011, HISTORICAL_DATA_FILE)
 
     if inburi_level is not None and bank_level is not None and dam_discharge is not None:
-        final_message = analyze_and_create_message(inburi_level, dam_discharge, bank_level, historical_discharge)
+        final_message = analyze_and_create_message(inburi_level, dam_discharge, bank_level, historical_2567, historical_2554)
     else:
-        inburi_status = f"สำเร็จ" if inburi_level is not None else "ล้มเหลว"
-        discharge_status = f"สำเร็จ" if dam_discharge is not None else "ล้มเหลว"
+        inburi_status = "สำเร็จ" if inburi_level is not None else "ล้มเหลว"
+        discharge_status = "สำเร็จ" if dam_discharge is not None else "ล้มเหลว"
         final_message = create_error_message(inburi_status, discharge_status)
 
     print("\n📤 ข้อความที่จะแจ้งเตือน:")
