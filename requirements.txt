@@ -1,6 +1,6 @@
-openpyxl
-pandas
+playwright
 requests
 beautifulsoup4
-selenium
 pytz
+openpyxl
+pandas
