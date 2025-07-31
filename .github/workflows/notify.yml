@@ -15,32 +15,29 @@ on:
 jobs:
   run-python-script:
     runs-on: ubuntu-latest
+
     steps:
-      # Checkout โค้ดจาก Repository
+      # 1. Checkout โค้ดจาก Repository ของคุณ
       - name: Check out repository code
         uses: actions/checkout@v4
 
-      # ตั้งค่า Python
+      # 2. ตั้งค่า Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      # แบบใหม่ (แนะนำ)
-- name: Install Python dependencies
-  run: |
-    python -m pip install --upgrade pip
-    pip install -r requirements.txt
+      # 3. ติดตั้งไลบรารี Python จาก requirements.txt
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-- name: Set up Chrome and ChromeDriver
-  uses: browser-actions/setup-chrome@v1
+      # 4. ติดตั้ง Chrome และ ChromeDriver ที่เวอร์ชันตรงกัน (วิธีแก้ไขที่เสถียร)
+      - name: Set up Chrome and ChromeDriver
+        uses: browser-actions/setup-chrome@v1
 
-- name: Run Python script
-  env:
-    LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
-  run: python main.py
-
-      # รันสคริปต์ Python
+      # 5. รันสคริปต์ Python
       - name: Run Python script
         env:
           # ดึง Token มาจาก Secrets ของ Repository
