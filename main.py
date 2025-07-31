@@ -12,22 +12,23 @@ from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 import random
 import re
+import time
 
 # --- URL ที่อัปเดตใหม่ตามไฟล์ที่ถูกต้อง ---
 # แหล่งข้อมูลระดับน้ำ อ.อินทร์บุรี (จาก inburi_bridge_alert.py)
-INBURI_WATER_URL = "https://river-tele.com/"
+INBURI_WATER_URL = "https://www.thaiwater.net/water/wl"
 # แหล่งข้อมูลการระบายน้ำเขื่อนเจ้าพระยา (จาก scraper.py)
-DISCHARGE_URL = "https://tiwrm.hii.or.th/DATA/REPORT/php/rid_bigcm/rid_bigcm.php"
+DISCHARGE_URL = "https://www.thaiwater.net/water/dam/large"
 
 # --- ค่าคงที่และ Token ---
-LINE_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
+LINE_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_API_URL = "https://api.line.me/v2/bot/message/broadcast"
 HISTORICAL_EXCEL_PATH = "data/dam_discharge_history.xlsx"
 
 def get_inburi_bridge_level():
     """
-    ดึงข้อมูลระดับน้ำที่สถานี C.35 สะพานอินทร์บุรี
-    โดยใช้ Logic ใหม่จากไฟล์ inburi_bridge_alert.py
+    ดึงข้อมูลระดับน้ำที่สถานีอินทร์บุรี
+    โดยใช้ Selenium เพื่อดึงข้อมูลจากหน้าเว็บที่โหลดด้วย JavaScript
     """
     driver = None
     try:
@@ -35,48 +36,79 @@ def get_inburi_bridge_level():
         options.add_argument("--headless")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--window-size=1920,1080") # เพิ่มขนาดหน้าต่างเพื่อช่วยในการโหลด
 
-        driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
+        print("กำลังเริ่มต้น ChromeDriver...")
+        driver = webdriver.Chrome(service=ChromeService("/usr/local/bin/chromedriver"), options=options)
         driver.set_page_load_timeout(180)
+        print(f"กำลังเข้าถึง URL: {INBURI_WATER_URL}")
         driver.get(INBURI_WATER_URL)
+        print("เข้าถึง URL สำเร็จแล้ว กำลังรอการโหลดหน้าเว็บ...")
 
-        # รอจนกว่าแถวของตาราง C.35 จะปรากฏ
-        wait = WebDriverWait(driver, 60)
-        target_element = wait.until(EC.presence_of_element_located((By.ID, "row-C.35")))
+        # รอจนกว่าตารางจะโหลดเสร็จ
+        wait = WebDriverWait(driver, 60) # เพิ่ม timeout เป็น 60 วินาที
+        
+        # ตรวจสอบว่ามี element ที่ระบุว่ากำลังโหลดอยู่หรือไม่
+        try:
+            wait.until(EC.invisibility_of_element_located((By.CLASS_NAME, "MuiCircularProgress-root")))
+            print("โหลดหน้าเว็บเสร็จสิ้น (ไม่พบ MuiCircularProgress-root)")
+        except:
+            print("ไม่พบ MuiCircularProgress-root หรือโหลดเสร็จสิ้นแล้ว")
 
-        # ดึงข้อมูลจากคอลัมน์ที่ 4 (ระดับน้ำ)
-        cells = target_element.find_elements(By.TAG_NAME, "td")
-        if len(cells) > 3:
-            level_str = cells[3].text.strip()
-            return float(level_str)
+        # ลองหาตารางด้วย class "MuiTable-root" ตามที่ผู้ใช้ให้มา
+        table = wait.until(EC.presence_of_element_located((By.CLASS_NAME, "MuiTable-root")))
+        print("พบตารางข้อมูลแล้ว")
+        
+        # ค้นหาแถวที่มีข้อความ "สถานีอินทร์บุรี"
+        # จากภาพ HTML ที่ผู้ใช้ให้มา, 'สถานีอินทร์บุรี' อยู่ใน <th> และระดับน้ำอยู่ใน <td> ที่ 3 (index 2) ของแถวนั้น
+        rows = table.find_elements(By.XPATH, ".//tr[contains(@class, \'MuiTableRow-root\')]")
+        for row in rows:
+            try:
+                # ค้นหา <th> ที่มีข้อความ "สถานีอินทร์บุรี"
+                station_header = row.find_element(By.XPATH, ".//th[contains(text(), \'สถานีอินทร์บุรี\')]")
+                if station_header:
+                    # ถ้าพบ <th> ที่มีข้อความ "สถานีอินทร์บุรี" ให้ดึงข้อมูลจาก <td> ในแถวนั้น
+                    cells = row.find_elements(By.XPATH, ".//td[contains(@class, \'MuiTableCell-root\')]")
+                    if len(cells) > 2:
+                        level_str = cells[2].text.strip()
+                        print(f"พบระดับน้ำสำหรับสถานีอินทร์บุรี: {level_str}")
+                        return float(level_str)
+            except Exception as e:
+                pass # ไม่ต้องทำอะไรถ้าไม่พบ element ในแถวนั้นๆ
+        
+        print("ไม่พบข้อมูลสถานีอินทร์บุรีในตาราง")
         return None
     except Exception as e:
         print(f"❌ ERROR: get_inburi_bridge_level: {e}")
         return None
     finally:
         if driver:
+            print("กำลังปิด ChromeDriver...")
             driver.quit()
 
 def fetch_chao_phraya_dam_discharge():
     """
     ดึงข้อมูลการระบายน้ำท้ายเขื่อนเจ้าพระยา
-    โดยใช้ Logic ใหม่จากไฟล์ scraper.py
+    โดยใช้ BeautifulSoup
     """
     try:
-        headers = {'Cache-Control': 'no-cache', 'Pragma': 'no-cache'}
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                   "Accept-Language": "en-US,en;q=0.9,th;q=0.8",
+                   "Cache-Control": "no-cache",
+                   "Pragma": "no-cache"}
         res = requests.get(DISCHARGE_URL, headers=headers, timeout=30)
         res.raise_for_status()
         soup = BeautifulSoup(res.content, 'html.parser')
 
-        # ค้นหา tag font ที่มีข้อความ "ระบายท้ายเขื่อนเจ้าพระยา"
-        target_font = soup.find('font', string=re.compile(r'\s*ระบายท้ายเขื่อนเจ้าพระยา\s*'))
-
-        if target_font:
-            # หา tag font ตัวถัดไปที่เป็นข้อมูลตัวเลข (สีแดง)
-            value_font = target_font.find_next('font', {'color': '#FF0000'})
-            if value_font:
-                discharge_text = value_font.text.strip()
-                return float(discharge_text)
+        tables = soup.find_all('table', class_='table-bordered')
+        for table in tables:
+            rows = table.find_all('tr')
+            for row in rows:
+                cells = row.find_all('td')
+                if len(cells) > 1 and "เขื่อนเจ้าพระยา" in cells[1].text:
+                    if len(cells) > 6:
+                        discharge_text = cells[6].text.strip().replace(',', '')
+                        return float(discharge_text)
         return None
     except Exception as e:
         print(f"❌ ERROR: fetch_chao_phraya_dam_discharge: {e}")
@@ -86,33 +118,32 @@ def fetch_chao_phraya_dam_discharge():
 def get_history_discharge():
     """
     คืนค่า dict {ปี: ปริมาณน้ำ} เฉพาะปีปัจจุบัน กับ 2554
-    **ฟังก์ชันนี้ยังคงการทำงานเหมือนเดิม**
     """
     try:
-        now = datetime.now(pytz.timezone('Asia/Bangkok'))
+        now = datetime.now(pytz.timezone("Asia/Bangkok"))
         current_year_th = now.year + 543
         day = now.day
-        month_en = now.strftime('%B')
+        month_en = now.strftime("%B")
         month_map = {
-            'January': 'มกราคม', 'February': 'กุมภาพันธ์', 'March': 'มีนาคม',
-            'April': 'เมษายน', 'May': 'พฤษภาคม', 'June': 'มิถุนายน',
-            'July': 'กรกฎาคม', 'August': 'สิงหาคม', 'September': 'กันยายน',
-            'October': 'ตุลาคม', 'November': 'พฤศจิกายน', 'December': 'ธันวาคม'
+            "January": "มกราคม", "February": "กุมภาพันธ์", "March": "มีนาคม",
+            "April": "เมษายน", "May": "พฤษภาคม", "June": "มิถุนายน",
+            "July": "กรกฎาคม", "August": "สิงหาคม", "September": "กันยายน",
+            "October": "ตุลาคม", "November": "พฤศจิกายน", "December": "ธันวาคม"
         }
         month_th = month_map[month_en]
 
         df = pd.read_excel(HISTORICAL_EXCEL_PATH)
 
-        years_check = [current_year_th - 1, 2554] #เทียบปีก่อนหน้า และปี 54
+        years_check = [current_year_th - 1, 2554]
         result = {}
         for year_th in years_check:
             match = df[
-                (df['วันที่'] == day) &
-                (df['เดือน'] == month_th) &
-                (df['ปี'] == year_th)
+                (df["วันที่"] == day) &
+                (df["เดือน"] == month_th) &
+                (df["ปี"] == year_th)
             ]
             if not match.empty:
-                result[year_th] = match['ปริมาณน้ำ (ลบ.ม./วิ)'].values[0]
+                result[year_th] = match["ปริมาณน้ำ (ลบ.ม./วิ)"].values[0]
 
         return result
     except Exception as e:
@@ -122,7 +153,6 @@ def get_history_discharge():
 def analyze_and_create_message(inburi_level, dam_discharge):
     """
     วิเคราะห์ข้อมูลและสร้างข้อความแจ้งเตือน
-    **ฟังก์ชันนี้ยังคงการทำงานเหมือนเดิม**
     """
     if inburi_level is None or dam_discharge is None:
         return "เกิดข้อผิดพลาด: ไม่สามารถดึงข้อมูลสำคัญได้ครบถ้วน กรุณาตรวจสอบ Log"
@@ -130,7 +160,6 @@ def analyze_and_create_message(inburi_level, dam_discharge):
     bank_height = 13.0 # ความสูงตลิ่ง อ.อินทร์บุรี (เมตร รทก.)
     history = get_history_discharge()
     prev_discharge_text = ""
-    # สร้างข้อความเปรียบเทียบจากข้อมูลใน history
     if history:
         prev_discharge_text += "ข้อมูลน้ำในวันเดียวกัน:\n"
         if history.get(max(history.keys())):
@@ -158,24 +187,23 @@ def analyze_and_create_message(inburi_level, dam_discharge):
         status_title = "สถานะปกติ"
         recommendation = "สถานการณ์น้ำยังคงปกติ สามารถใช้ชีวิตได้ตามปกติครับ"
 
-    now = datetime.now(pytz.timezone('Asia/Bangkok'))
-    message = (
-        f"{status_emoji} {status_title}\n"
-        f"รายงานสถานการณ์น้ำเจ้าพระยา อ.อินทร์บุรี\n"
-        f"ประจำวันที่: {now.strftime('%d/%m/%Y %H:%M')} น.\n\n"
-        f"• ระดับน้ำ (สะพานอินทร์บุรี): {inburi_level:.2f} ม.รทก.\n"
-        f"  (ต่ำกว่าตลิ่งประมาณ {distance_to_bank:.2f} ม.)\n"
-        f"• เขื่อนเจ้าพระยา (ระบายท้ายเขื่อน): {dam_discharge:,.0f} ลบ.ม./วินาที\n\n"
-        f"{prev_discharge_text}\n"
-        f"-----------------------------------\n"
-        f"{recommendation}"
-    )
+    now = datetime.now(pytz.timezone("Asia/Bangkok"))
+    message = f"""{status_emoji} {status_title}
+รายงานสถานการณ์น้ำเจ้าพระยา อ.อินทร์บุรี
+ประจำวันที่: {now.strftime("%d/%m/%Y %H:%M")} น.
+
+• ระดับน้ำ (สะพานอินทร์บุรี): {inburi_level:.2f} ม.รทก.
+  (ต่ำกว่าตลิ่งประมาณ {distance_to_bank:.2f} ม.)
+• เขื่อนเจ้าพระยา (ระบายท้ายเขื่อน): {dam_discharge:,.0f} ลบ.ม./วินาที
+
+{prev_discharge_text}
+-----------------------------------
+{recommendation}"""
     return message
 
 def send_line_broadcast(message):
     """
     ส่งข้อความแจ้งเตือนผ่าน LINE Broadcast
-    **ฟังก์ชันนี้ยังคงการทำงานเหมือนเดิม**
     """
     if not LINE_TOKEN:
         print("❌ ไม่พบ LINE_CHANNEL_ACCESS_TOKEN!")
@@ -211,3 +239,5 @@ if __name__ == "__main__":
     print("\n🚀 กำลังส่งข้อความไปยัง LINE...")
     send_line_broadcast(final_message)
     print("✅ เสร็จสิ้นการทำงาน")
+
+
