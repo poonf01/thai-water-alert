@@ -8,7 +8,9 @@ from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
+
+# ไม่ต้องใช้ webdriver_manager แล้ว
+# from webdriver_manager.chrome import ChromeDriverManager
 
 # --- ค่าคงที่ ---
 SINGBURI_WATER_URL = "https://singburi.thaiwater.net/wl"
@@ -20,8 +22,7 @@ LINE_API_URL = "https://api.line.me/v2/bot/message/broadcast"
 # --- ดึงระดับน้ำอินทร์บุรี ---
 def get_singburi_data(url):
     """
-    ดึงข้อมูลจากเว็บ singburi.thaiwater.net
-    คืนค่า: (ระดับน้ำ, ระดับตลิ่ง) หรือ (None, None) หากล้มเหลว
+    ดึงข้อมูลจากเว็บ singburi.thaiwater.net โดยใช้ Selenium 4 แบบใหม่
     """
     driver = None
     try:
@@ -32,7 +33,10 @@ def get_singburi_data(url):
         options.add_argument("--disable-gpu")
         options.add_argument("--window-size=1920,1080")
 
-        driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
+        # --- ส่วนที่เปลี่ยนแปลง ---
+        # เราไม่ต้องใช้ ChromeDriverManager อีกต่อไป
+        # Selenium 4 จะจัดการหา Chrome และ ChromeDriver ที่เข้ากันได้ให้เอง
+        driver = webdriver.Chrome(options=options)
         
         driver.set_page_load_timeout(240)
         driver.get(url)
@@ -73,28 +77,20 @@ def get_singburi_data(url):
 def fetch_chao_phraya_dam_discharge():
     """
     ดึงข้อมูลจากเว็บ tiwrm.hii.or.th
-    คืนค่า: อัตราการระบายน้ำ (float) หรือ None หากล้มเหลว
     """
     try:
         res = requests.get(DISCHARGE_URL, timeout=30)
         res.raise_for_status()
         soup = BeautifulSoup(res.text, 'html.parser')
 
-        # หา cell ที่มีข้อความ "ปริมาณน้ำ"
         header_cell = soup.find(lambda tag: tag.name == 'td' and 'ปริมาณน้ำ' in tag.text)
         
         if header_cell:
-            # ค่าที่ต้องการจะอยู่ใน cell (td) ถัดไป
             value_cell = header_cell.find_next_sibling('td')
             if value_cell:
-                full_text = value_cell.text.strip()  # จะได้ค่าประมาณ "1,050.00/ 2840 cms"
-                
-                # แยกข้อความด้วย "/" และเอาส่วนแรก
+                full_text = value_cell.text.strip()
                 discharge_str = full_text.split('/')[0]
-                
-                # เอเครื่องหมายจุลภาค (comma) ออก แล้วแปลงเป็น float
                 discharge_value = float(discharge_str.replace(',', ''))
-                
                 print(f"✅ พบข้อมูลเขื่อนเจ้าพระยา: {discharge_value}")
                 return discharge_value
 
