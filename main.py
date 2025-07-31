@@ -12,45 +12,49 @@ LINE_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_API_URL = "https://api.line.me/v2/bot/message/broadcast"
 
 
-# --- ดึงระดับน้ำอินทร์บุรี (Rewritten with Playwright) ---
+# --- ดึงระดับน้ำอินทร์บุรี (Updated with better camouflage and screenshot debugging) ---
 def get_singburi_data(url):
     """
     ดึงข้อมูลจากเว็บ singburi.thaiwater.net โดยใช้ Playwright
     """
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        # สร้าง Context ให้เหมือนเบราว์เซอร์จริงมากขึ้น
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+            viewport={'width': 1920, 'height': 1080}
+        )
+        page = context.new_page()
+        try:
             page.goto(url, timeout=120000)
-            
-            # รอจนกว่าตารางข้อมูลจะปรากฏ
             page.wait_for_selector("div[aria-labelledby='waterLevel'] table tr", timeout=60000)
             
             html = page.content()
             browser.close()
 
-        soup = BeautifulSoup(html, 'html.parser')
-        water_table = soup.find("div", attrs={"aria-labelledby": "waterLevel"})
-        if not water_table:
-            print("⚠️ ไม่พบตารางข้อมูลระดับน้ำหลัก (div[aria-labelledby='waterLevel'])")
-            return None, None
+            soup = BeautifulSoup(html, 'html.parser')
+            water_table = soup.find("div", attrs={"aria-labelledby": "waterLevel"})
+            if not water_table:
+                return None, None
             
-        rows = water_table.find_all("tr")
-        for row in rows:
-            station_header = row.find("th")
-            if station_header and "อินทร์บุรี" in station_header.get_text(strip=True):
-                tds = row.find_all("td")
-                if len(tds) > 2:
-                    level_str = tds[1].text.strip()
-                    bank_level_str = tds[2].text.strip()
-                    print(f"✅ พบข้อมูลอินทร์บุรี: ระดับน้ำ={level_str}, ระดับตลิ่ง={bank_level_str}")
-                    return float(level_str), float(bank_level_str)
-                    
-        print("⚠️ ไม่พบข้อมูลสถานี 'อินทร์บุรี' ในตาราง")
-        return None, None
-    except Exception as e:
-        print(f"❌ ERROR: get_singburi_data: {e}")
-        return None, None
+            rows = water_table.find_all("tr")
+            for row in rows:
+                station_header = row.find("th")
+                if station_header and "อินทร์บุรี" in station_header.get_text(strip=True):
+                    tds = row.find_all("td")
+                    if len(tds) > 2:
+                        level_str = tds[1].text.strip()
+                        bank_level_str = tds[2].text.strip()
+                        print(f"✅ พบข้อมูลอินทร์บุรี: ระดับน้ำ={level_str}, ระดับตลิ่ง={bank_level_str}")
+                        return float(level_str), float(bank_level_str)
+            return None, None
+        except Exception as e:
+            print(f"❌ ERROR: get_singburi_data: {e}")
+            # ถ่าย Screenshot ตอนที่เกิด Error เพื่อการดีบัก
+            page.screenshot(path='debug_screenshot.png')
+            print("📸 Screenshot 'debug_screenshot.png' saved for debugging.")
+            browser.close()
+            return None, None
 
 
 # --- ดึงข้อมูล discharge จากเว็บ HII ---
