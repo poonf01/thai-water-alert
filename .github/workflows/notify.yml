@@ -15,11 +15,11 @@ jobs:
         with:
           python-version: '3.11'
 
-      # เพิ่มการติดตั้ง dependencies ที่จำเป็นสำหรับ Chrome
+      # Corrected the command by removing the obsolete libgconf-2-4 package
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libnss3 libgconf-2-4 libfontconfig1
+          sudo apt-get install -y libnss3 libfontconfig1
 
       - run: |
           python -m pip install --upgrade pip
