@@ -16,10 +16,13 @@ DISCHARGE_URL = "https://tiwrm.hii.or.th/DATA/REPORT/php/chart/chaopraya/small/c
 LINE_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_API_URL = "https://api.line.me/v2/bot/message/broadcast"
 
+
 # --- ดึงระดับน้ำอินทร์บุรี ---
 def get_singburi_data(url):
-    # TODO: หากสคริปต์ไม่ทำงาน ให้ตรวจสอบ Selector ในฟังก์ชันนี้เป็นอันดับแรก
-    # โดยการเปิดเว็บ SINGBURI_WATER_URL แล้วเช็คโครงสร้าง HTML ของตาราง
+    """
+    ดึงข้อมูลจากเว็บ singburi.thaiwater.net
+    คืนค่า: (ระดับน้ำ, ระดับตลิ่ง) หรือ (None, None) หากล้มเหลว
+    """
     driver = None
     try:
         options = webdriver.ChromeOptions()
@@ -31,27 +34,41 @@ def get_singburi_data(url):
         driver.set_page_load_timeout(180)
         driver.get(url)
 
+        # รอจนกว่าตารางจะโหลดเสร็จ
         wait = WebDriverWait(driver, 60)
-        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "tbody > tr")))
+        # เราจะรอให้ตารางทั้งอันโหลดเสร็จ โดยหาจาก id ของตารางที่เห็นใน DevTools
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div[aria-labelledby='waterLevel'] table")))
 
         soup = BeautifulSoup(driver.page_source, 'html.parser')
-        rows = soup.find_all("tr")
+        
+        # ค้นหาตารางหลักที่มีข้อมูลระดับน้ำโดยตรง
+        water_table = soup.find("div", attrs={"aria-labelledby": "waterLevel"})
+        if not water_table:
+            print("⚠️ ไม่พบตารางข้อมูลระดับน้ำหลัก (div[aria-labelledby='waterLevel'])")
+            return None, None
+            
+        rows = water_table.find_all("tr")
 
         for row in rows:
             station_header = row.find("th")
             if station_header and "อินทร์บุรี" in station_header.get_text(strip=True):
                 tds = row.find_all("td")
-                if len(tds) > 1:
-                    level_str = tds[1].text.strip()
-                    return float(level_str)
+                # จาก HTML ใหม่ เราต้องการข้อมูลจาก <td> ที่ 2 และ 3
+                if len(tds) > 2:
+                    level_str = tds[1].text.strip() # ระดับน้ำ (ม.รทก.)
+                    bank_level_str = tds[2].text.strip() # ระดับตลิ่ง
+                    print(f"✅ พบข้อมูลอินทร์บุรี: ระดับน้ำ={level_str}, ระดับตลิ่ง={bank_level_str}")
+                    return float(level_str), float(bank_level_str)
+                    
         print("⚠️ ไม่พบข้อมูลสถานี 'อินทร์บุรี' ในตาราง")
-        return None
+        return None, None
     except Exception as e:
         print(f"❌ ERROR: get_singburi_data: {e}")
-        return None
+        return None, None
     finally:
         if driver:
             driver.quit()
+
 
 # --- ดึงข้อมูล discharge จากเว็บ HII ---
 def fetch_chao_phraya_dam_discharge():
@@ -77,9 +94,9 @@ def fetch_chao_phraya_dam_discharge():
         print(f"❌ ERROR: fetch_chao_phraya_dam_discharge: {e}")
         return None
 
+
 # --- วิเคราะห์ข้อมูลและสร้างข้อความแจ้งเตือน ---
-def analyze_and_create_message(inburi_level, dam_discharge):
-    bank_height = 13.0
+def analyze_and_create_message(inburi_level, dam_discharge, bank_height):
     distance_to_bank = bank_height - inburi_level
 
     if dam_discharge > 2400 or distance_to_bank < 1.0:
@@ -102,10 +119,12 @@ def analyze_and_create_message(inburi_level, dam_discharge):
         f"ประจำวันที่: {now.strftime('%d/%m/%Y %H:%M')} น.\n\n"
         f"• ระดับน้ำ (อินทร์บุรี): {inburi_level:.2f} ม.รทก.\n"
         f"  (ต่ำกว่าตลิ่งประมาณ {distance_to_bank:.2f} ม.)\n"
+        f"  (ระดับตลิ่ง: {bank_height:.2f} ม.รทก.)\n"
         f"• เขื่อนเจ้าพระยา (ข้อมูลอ้างอิง): {dam_discharge:,.0f} ลบ.ม./วินาที\n\n"
         f"{recommendation}"
     )
     return message
+
 
 # --- สร้างข้อความแจ้งเตือนข้อผิดพลาด ---
 def create_error_message(inburi_status, discharge_status):
@@ -139,29 +158,31 @@ def send_line_broadcast(message):
     except Exception as e:
         print(f"❌ ERROR: LINE Broadcast: {e}")
 
+
 # --- Main ---
 if __name__ == "__main__":
     print("=== เริ่มการทำงานระบบแจ้งเตือนน้ำอินทร์บุรี ===")
     
     print("1. กำลังดึงข้อมูลระดับน้ำ อ.อินทร์บุรี...")
-    inburi_level = get_singburi_data(SINGBURI_WATER_URL)
+    inburi_level, bank_level = get_singburi_data(SINGBURI_WATER_URL)
+    
     print("2. กำลังดึงข้อมูลระบายน้ำเขื่อนเจ้าพระยา...")
     dam_discharge = fetch_chao_phraya_dam_discharge()
 
     print("\n--- สรุปผลการดึงข้อมูล ---")
-    print(f"ระดับน้ำอินทร์บุรี: {inburi_level}")
+    print(f"ระดับน้ำอินทร์บุรี: {inburi_level}, ระดับตลิ่ง: {bank_level}")
     print(f"เขื่อนเจ้าพระยา: {dam_discharge}")
     print("--------------------------\n")
 
     final_message = ""
-    # ตรวจสอบว่าดึงข้อมูลสำเร็จทั้งสองส่วนหรือไม่
-    if inburi_level is not None and dam_discharge is not None:
+    # ตรวจสอบว่าดึงข้อมูลที่จำเป็นสำเร็จทั้งหมดหรือไม่
+    if inburi_level is not None and bank_level is not None and dam_discharge is not None:
         print("✅ ดึงข้อมูลสำเร็จทั้งหมด กำลังสร้างข้อความปกติ...")
-        final_message = analyze_and_create_message(inburi_level, dam_discharge)
+        final_message = analyze_and_create_message(inburi_level, dam_discharge, bank_level)
     else:
         print("❌ ดึงข้อมูลไม่สำเร็จอย่างน้อย 1 รายการ กำลังสร้างข้อความแจ้งเตือนข้อผิดพลาด...")
-        inburi_status = "ดึงข้อมูลสำเร็จ" if inburi_level is not None else "ล้มเหลว"
-        discharge_status = "ดึงข้อมูลสำเร็จ" if dam_discharge is not None else "ล้มเหลว"
+        inburi_status = f"สำเร็จ (ระดับน้ำ={inburi_level}, ตลิ่ง={bank_level})" if inburi_level is not None else "ล้มเหลว"
+        discharge_status = f"สำเร็จ ({dam_discharge})" if dam_discharge is not None else "ล้มเหลว"
         final_message = create_error_message(inburi_status, discharge_status)
 
     print("\n📤 ข้อความที่จะแจ้งเตือน:")
