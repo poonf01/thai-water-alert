@@ -9,21 +9,25 @@ jobs:
   run-selenium-test:
     runs-on: ubuntu-latest
     steps:
+      # 1. ดึงโค้ดใน Repository ของเราลงมา
       - name: Check out repository code
         uses: actions/checkout@v4
 
+      # 2. ติดตั้ง Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      # ส่วนที่สำคัญที่สุด: ติดตั้ง Chrome และ ChromeDriver
+      # 3. ติดตั้ง Chrome และ ChromeDriver ให้ถูกต้อง
       - name: Set up Chrome and ChromeDriver
         uses: browser-actions/setup-chrome@v1
-        # การไม่ใส่ with: อะไรเลย คือการใช้ค่า default ซึ่งจะติดตั้งทั้งสองอย่าง
+        # สังเกตว่าส่วนนี้ไม่มี with: อีกต่อไป เพื่อให้ระบบติดตั้งทุกอย่างที่จำเป็น
 
+      # 4. ติดตั้ง library ที่ต้องใช้
       - name: Install Python dependencies
         run: pip install selenium
 
+      # 5. สั่งรันสคริปต์ทดสอบ
       - name: Run Selenium test script
         run: python test_selenium.py
