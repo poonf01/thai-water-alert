@@ -1,138 +1,237 @@
+import os
+import re
+import json
+import time
+import random
+import requests
+import pytz
 import pandas as pd
 from datetime import datetime
-import locale
+from bs4 import BeautifulSoup
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import StaleElementReferenceException
 
-# ตั้งค่า locale สำหรับการแปลงชื่อเดือนภาษาไทย
-locale.setlocale(locale.LC_ALL, 'th_TH.UTF-8')
+# --- ค่าคงที่ ---
+SINGBURI_URL = "https://singburi.thaiwater.net/wl"
+DISCHARGE_URL = 'https://tiwrm.hii.or.th/DATA/REPORT/php/chart/chaopraya/small/chaopraya.php'
+HISTORICAL_DATA_FILE = 'data/dam_discharge_history_complete.csv'
+LINE_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
+LINE_API_URL = "https://api.line.me/v2/bot/message/broadcast"
 
-def thai_month_to_int(month_thai):
-    """Converts Thai month name to its corresponding integer (1-12)."""
-    month_map = {
-        'มกราคม': 1, 'กุมภาพันธ์': 2, 'มีนาคม': 3, 'เมษายน': 4,
-        'พฤษภาคม': 5, 'มิถุนายน': 6, 'กรกฎาคม': 7, 'สิงหาคม': 8,
-        'กันยายน': 9, 'ตุลาคม': 10, 'พฤศจิกายน': 11, 'ธันวาคม': 12
-    }
-    return month_map.get(month_thai, None)
+# --- ดึงระดับน้ำอินทร์บุรี ---
+def get_inburi_data(url: str, timeout: int = 45, retries: int = 3):
+    opts = Options()
+    opts.add_argument("--headless")
+    opts.add_argument("--no-sandbox")
+    opts.add_argument("--disable-dev-shm-usage")
+    
+    driver = None
+    for attempt in range(retries):
+        try:
+            driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=opts)
+            driver.get(url)
+            WebDriverWait(driver, timeout).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "th[scope='row']"))
+            )
+            html = driver.page_source
+            
+            soup = BeautifulSoup(html, "html.parser")
+            for th in soup.select("th[scope='row']"):
+                if "อินทร์บุรี" in th.get_text(strip=True):
+                    tr = th.find_parent("tr")
+                    cols = tr.find_all("td")
+                    water_level = float(cols[1].get_text(strip=True))
+                    bank_level = 13.0
+                    print(f"✅ พบข้อมูลอินทร์บุรี: ระดับน้ำ={water_level}, ระดับตลิ่ง={bank_level} (ค่าโดยประมาณ)")
+                    if driver: driver.quit()
+                    return water_level, bank_level
+            
+            print("⚠️ ไม่พบข้อมูลสถานี 'อินทร์บุรี' ในตาราง")
+            if driver: driver.quit()
+            return None, None
+        except StaleElementReferenceException:
+            print(f"⚠️ เจอ Stale Element Reference (ครั้งที่ {attempt + 1}/{retries}), กำลังลองใหม่...")
+            if driver: driver.quit()
+            time.sleep(3)
+            continue
+        except Exception as e:
+            print(f"❌ ERROR: get_inburi_data: {e}")
+            if driver: driver.quit()
+            return None, None
+    return None, None
 
-def load_and_preprocess_data(file_path):
-    """
-    Loads CSV data, preprocesses it by converting Thai month to int,
-    combining date columns, and setting 'date' as index.
-    """
-    df = pd.read_csv(file_path)
+# --- ดึงข้อมูลเขื่อนเจ้าพระยา (เพิ่ม Cache Busting) ---
+def fetch_chao_phraya_dam_discharge(url: str, timeout: int = 30):
+    try:
+        # เพิ่ม headers เพื่อพยายามไม่ให้ติด cache
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache'
+        }
+        # เพิ่มตัวเลขสุ่มต่อท้าย URL (Cache Busting)
+        cache_buster_url = f"{url}?cb={random.randint(10000, 99999)}"
+        
+        response = requests.get(cache_buster_url, headers=headers, timeout=timeout)
+        response.raise_for_status()
+        response.encoding = 'utf-8'
+        
+        match = re.search(r'var json_data = (\[.*\]);', response.text)
+        if not match:
+            print("❌ ERROR: ไม่พบข้อมูล JSON ในหน้าเว็บ")
+            return None
+            
+        json_string = match.group(1)
+        data = json.loads(json_string)
+        
+        water_storage = data[0]['itc_water']['C13']['storage']
+        if water_storage is not None:
+            if isinstance(water_storage, (int, float)):
+                value = float(water_storage)
+            else:
+                value = float(str(water_storage).replace(',', ''))
+                
+            print(f"✅ พบข้อมูลเขื่อนเจ้าพระยา: {value}")
+            return value
+    except Exception as e:
+        print(f"❌ ERROR: fetch_chao_phraya_dam_discharge: {e}")
+    return None
 
-    # Rename columns for easier access
-    df.columns = ['day', 'month_thai', 'year', 'discharge_m3_per_s']
+# --- อ่านและเตรียมข้อมูลย้อนหลัง ---
+def load_historical_data(file_path: str):
+    try:
+        if not os.path.exists(file_path):
+            print(f"⚠️ ไม่พบไฟล์ข้อมูลย้อนหลังที่: {file_path}")
+            return None
 
-    # Convert Thai month to integer
-    df['month'] = df['month_thai'].apply(thai_month_to_int)
+        df = pd.read_csv(file_path)
+        df.rename(columns={'ปริมาณน้ำ (ลบ.ม./วินาที)': 'discharge_rate'}, inplace=True)
+        
+        thai_month_map = {
+            'มกราคม': 1, 'กุมภาพันธ์': 2, 'มีนาคม': 3, 'เมษายน': 4, 
+            'พฤษภาคม': 5, 'มิถุนายน': 6, 'กรกฎาคม': 7, 'สิงหาคม': 8, 
+            'กันยายน': 9, 'ตุลาคม': 10, 'พฤศจิกายน': 11, 'ธันวาคม': 12
+        }
+        df['month_num'] = df['เดือน'].map(thai_month_map)
+        
+        df['ad_date'] = pd.to_datetime((df['ปี'] - 543).astype(str) + '-' + df['month_num'].astype(str) + '-' + df['วันที่'].astype(str), errors='coerce')
+        df.dropna(subset=['ad_date'], inplace=True)
+        
+        print("✅ เตรียมข้อมูลย้อนหลังสำเร็จ")
+        return df
+    except Exception as e:
+        print(f"❌ ERROR: ไม่สามารถโหลดข้อมูลย้อนหลังได้: {e}")
+        return None
 
-    # Convert Buddhist year (BE) to Common Era (CE) if necessary
-    # Assuming years like 2567 are BE and need to be converted to 2024
-    # Check if the year is in BE format (e.g., > 2400) and convert
-    df['year'] = df['year'].apply(lambda x: x - 543 if x > 2400 else x)
+# --- ค้นหาข้อมูลย้อนหลัง ---
+def find_historical_discharge(df: pd.DataFrame, target_date: datetime):
+    try:
+        if df is None or df.empty:
+            return None
+        
+        closest_row = df.iloc[(df['ad_date'] - target_date).abs().argsort()[:1]]
+        
+        if not closest_row.empty:
+            historical_discharge = closest_row['discharge_rate'].iloc[0]
+            print(f"✅ พบข้อมูลย้อนหลังสำหรับวันที่ {target_date.strftime('%Y-%m-%d')}: {historical_discharge}")
+            return historical_discharge
+        return None
+    except Exception as e:
+        print(f"❌ ERROR: find_historical_discharge ({target_date.year}): {e}")
+        return None
 
+# --- วิเคราะห์และสร้างข้อความ ---
+def analyze_and_create_message(inburi_level, dam_discharge, bank_height, hist_2567=None, hist_2554=None):
+    distance_to_bank = bank_height - inburi_level
+    
+    hist_2567_text = f"\n  (เทียบปี 2567: {hist_2567:,.0f} ลบ.ม./วินาที)" if hist_2567 is not None else ""
+    hist_2554_text = f"\n  (เทียบปี 2554: {hist_2554:,.0f} ลบ.ม./วินาที)" if hist_2554 is not None else ""
+    
+    if dam_discharge > 2400 or distance_to_bank < 1.0:
+        status_emoji = "🟥"
+        status_title = "‼️ ประกาศเตือนภัยระดับสูงสุด ‼️"
+        recommendation = "คำแนะนำ:\n1. เตรียมพร้อมอพยพหากอยู่ในพื้นที่เสี่ยง\n2. ขนย้ายทรัพย์สินขึ้นที่สูงโดยด่วน\n3. งดใช้เส้นทางสัญจรริมแม่น้ำ"
+    elif dam_discharge > 1800 or distance_to_bank < 2.0:
+        status_emoji = "🟨"
+        status_title = "‼️ ประกาศเฝ้าระวัง ‼️"
+        recommendation = "คำแนะนำ:\n1. บ้านเรือนริมตลิ่งนอกคันกั้นน้ำ ให้เริ่มขนของขึ้นที่สูง\n2. ติดตามสถานการณ์อย่างใกล้ชิด"
+    else:
+        status_emoji = "🟩"
+        status_title = "สถานะปกติ"
+        recommendation = "สถานการณ์น้ำยังปกติ ใช้ชีวิตได้ตามปกติครับ"
 
-    # Create a datetime column
-    # Use errors='coerce' to turn invalid date parsing into NaT (Not a Time)
-    df['date'] = pd.to_datetime(df[['year', 'month', 'day']], errors='coerce')
+    now = datetime.now(pytz.timezone('Asia/Bangkok'))
+    message = (
+        f"{status_emoji} {status_title}\n"
+        f"รายงานสถานการณ์น้ำเจ้าพระยา อ.อินทร์บุรี\n"
+        f"ประจำวันที่: {now.strftime('%d/%m/%Y %H:%M')} น.\n\n"
+        f"• ระดับน้ำ (อินทร์บุรี): {inburi_level:.2f} ม.รทก.\n"
+        f"  (ต่ำกว่าตลิ่งประมาณ {distance_to_bank:.2f} ม.)\n"
+        f"  (ระดับตลิ่ง: {bank_height:.2f} ม.รทก.)\n"
+        f"• เขื่อนเจ้าพระยา: {dam_discharge:,.0f} ลบ.ม./วินาที{hist_2567_text}{hist_2554_text}\n\n"
+        f"{recommendation}"
+    )
+    return message
 
-    # Drop rows where date could not be parsed
-    df.dropna(subset=['date'], inplace=True)
-
-    # Set 'date' as index for easier time-series operations
-    df.set_index('date', inplace=True)
-
-    # Select and return relevant columns
-    return df[['discharge_m3_per_s']]
-
-# --- Main script execution ---
-if __name__ == "__main__":
-    # File paths (update if your files are in a different location)
-    file_2554 = 'ระดับน้ำปี2554.xlsx - ทำข้อมูลเป็นคอลัมแยกข้อมูล น้ำแ.csv'
-    file_2567 = 'ระดับน้ำปี2567.xlsx - โหลดไม่ได้ส่งเป็นชีดมาใหม่.csv'
-    file_complete = 'dam_discharge_history_complete.csv'
-
-    # Load and preprocess data from all files
-    df_2554 = load_and_preprocess_data(file_2554)
-    df_2567 = load_and_preprocess_data(file_2567)
-    df_complete = load_and_preprocess_data(file_complete)
-
-    # Combine all data (handle potential overlaps by taking the latest/most complete)
-    # For simplicity, we'll just concatenate and drop duplicates for the same date
-    # In a real scenario, you might want a more sophisticated merge/update strategy
-    all_data = pd.concat([df_2554, df_2567, df_complete]).sort_index()
-    all_data = all_data[~all_data.index.duplicated(keep='last')] # Keep the last occurrence for duplicate dates
-
-    # Get today's date (or the latest date in your data if simulating)
-    # For actual today's date:
-    # today = datetime.now()
-    # For demonstration, let's use the last date available in our combined data as 'latest_date'
-    # This simulates getting the most recent data point.
-    latest_date_in_data = all_data.index.max()
-    print(f"ข้อมูลล่าสุดในชุดข้อมูลคือ: {latest_date_in_data.strftime('%d %B %Y')}")
-
-    # Extract year for easy filtering
-    all_data['year_ce'] = all_data.index.year
-
-    # Filter data for year 2011 (2554 BE) and 2024 (2567 BE)
-    data_2011 = all_data[all_data['year_ce'] == 2011]
-    data_2024 = all_data[all_data['year_ce'] == 2024]
-
-    # --- Prepare for comparison ---
-    # Create a common index for comparison based on month-day
-    data_2011['month_day'] = data_2011.index.strftime('%m-%d')
-    data_2024['month_day'] = data_2024.index.strftime('%m-%d')
-
-    # Merge dataframes on month-day for easy comparison
-    comparison_df = pd.merge(
-        data_2024.rename(columns={'discharge_m3_per_s': 'Discharge_2024'}),
-        data_2011.rename(columns={'discharge_m3_per_s': 'Discharge_2011'}),
-        on='month_day',
-        how='outer' # Use outer to include all dates present in either year
+# --- สร้างข้อความ Error ---
+def create_error_message(inburi_status, discharge_status):
+    now = datetime.now(pytz.timezone('Asia/Bangkok'))
+    return (
+        f"⚙️❌ เกิดข้อผิดพลาดในการดึงข้อมูล ❌⚙️\n"
+        f"เวลา: {now.strftime('%d/%m/%Y %H:%M')} น.\n\n"
+        f"• สถานะข้อมูลระดับน้ำอินทร์บุรี: {inburi_status}\n"
+        f"• สถานะข้อมูลเขื่อนเจ้าพระยา: {discharge_status}\n\n"
+        f"กรุณาตรวจสอบ Log บน GitHub Actions เพื่อดูรายละเอียดข้อผิดพลาดครับ"
     )
 
-    # Clean up and add original date columns for clarity
-    comparison_df['Date_2024'] = pd.to_datetime(comparison_df['month_day'] + '-' + comparison_df['year_ce_x'].astype(str))
-    comparison_df['Date_2011'] = pd.to_datetime(comparison_df['month_day'] + '-' + comparison_df['year_ce_y'].astype(str))
+# --- ส่งข้อความ LINE ---
+def send_line_broadcast(message):
+    if not LINE_TOKEN:
+        print("❌ ไม่พบ LINE_CHANNEL_ACCESS_TOKEN!")
+        return
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"}
+    payload = {"messages": [{"type": "text", "text": message}]}
+    try:
+        res = requests.post(LINE_API_URL, headers=headers, json=payload, timeout=10)
+        res.raise_for_status()
+        print("✅ ส่งข้อความ Broadcast สำเร็จ!")
+    except Exception as e:
+        print(f"❌ ERROR: LINE Broadcast: {e}")
 
-    # Select relevant columns for display
-    comparison_df = comparison_df[['month_day', 'Date_2024', 'Discharge_2024', 'Date_2011', 'Discharge_2011']]
-    comparison_df.set_index('month_day', inplace=True)
-    comparison_df.sort_index(inplace=True)
+# --- Main (เพิ่ม Cache Busting) ---
+if __name__ == "__main__":
+    print("=== เริ่มการทำงานระบบแจ้งเตือนน้ำอินทร์บุรี ===")
+    
+    # เพิ่มตัวเลขสุ่มต่อท้าย URL ของ Selenium (Cache Busting)
+    inburi_cache_buster_url = f"{SINGBURI_URL}?cb={random.randint(10000, 99999)}"
+    
+    inburi_level, bank_level = get_inburi_data(inburi_cache_buster_url)
+    dam_discharge = fetch_chao_phraya_dam_discharge(DISCHARGE_URL)
+    
+    historical_df = load_historical_data(HISTORICAL_DATA_FILE)
+    
+    today = datetime.now(pytz.timezone('Asia/Bangkok'))
+    target_date_2024 = today.replace(year=2024)
+    target_date_2011 = today.replace(year=2011)
+    
+    hist_2567 = find_historical_discharge(historical_df, target_date_2024)
+    hist_2554 = find_historical_discharge(historical_df, target_date_2011)
 
-
-    print("\n--- การเปรียบเทียบปริมาณการปล่อยน้ำท้ายเขื่อนเจ้าพระยา (ลบ.ม./วินาที) ---")
-    print(comparison_df.to_string()) # .to_string() to show all rows if dataframe is large
-
-    print("\n--- การแจ้งเตือนและข้อมูลวันล่าสุด ---")
-
-    # Get data for the latest_date (today or last available in data)
-    latest_discharge_2024 = data_2024.loc[data_2024.index == latest_date_in_data, 'discharge_m3_per_s'].values
-    # Get the corresponding month-day for latest_date
-    latest_date_month_day = latest_date_in_data.strftime('%m-%d')
-    # Find discharge for 2011 on the same month-day
-    latest_discharge_2011 = data_2011.loc[data_2011['month_day'] == latest_date_month_day, 'discharge_m3_per_s'].values
-
-
-    print(f"วันที่ล่าสุดในข้อมูล: {latest_date_in_data.strftime('%d %B %Y')}")
-
-    if latest_discharge_2024.size > 0:
-        print(f"ปริมาณน้ำปี 2567 (2024) วันที่ {latest_date_in_data.strftime('%d %B')}: {latest_discharge_2024[0]:.0f} ลบ.ม./วินาที")
+    if inburi_level is not None and bank_level is not None and dam_discharge is not None:
+        final_message = analyze_and_create_message(inburi_level, dam_discharge, bank_level, hist_2567, hist_2554)
     else:
-        print(f"ไม่มีข้อมูลปริมาณน้ำสำหรับปี 2567 (2024) ในวันที่ {latest_date_in_data.strftime('%d %B')}")
+        inburi_status = "สำเร็จ" if inburi_level is not None else "ล้มเหลว"
+        discharge_status = "สำเร็จ" if dam_discharge is not None else "ล้มเหลว"
+        final_message = create_error_message(inburi_status, discharge_status)
 
-    if latest_discharge_2011.size > 0:
-        print(f"ปริมาณน้ำปี 2554 (2011) วันที่ {latest_date_in_data.strftime('%d %B')}: {latest_discharge_2011[0]:.0f} ลบ.ม./วินาที")
-    else:
-        print(f"ไม่มีข้อมูลปริมาณน้ำสำหรับปี 2554 (2011) ในวันที่ {latest_date_in_data.strftime('%d %B')}")
-
-    # Optional: Add simple alert logic
-    if latest_discharge_2024.size > 0 and latest_discharge_2011.size > 0:
-        diff = latest_discharge_2024[0] - latest_discharge_2011[0]
-        if diff > 0:
-            print(f"**แจ้งเตือน:** ปริมาณน้ำปี 2567 วันนี้สูงกว่าปี 2554 ในวันเดียวกัน: {abs(diff):.0f} ลบ.ม./วินาที")
-        elif diff < 0:
-            print(f"**แจ้งเตือน:** ปริมาณน้ำปี 2567 วันนี้ต่ำกว่าปี 2554 ในวันเดียวกัน: {abs(diff):.0f} ลบ.ม./วินาที")
-        else:
-            print(f"ปริมาณน้ำปี 2567 และปี 2554 วันนี้เท่ากัน")
+    print("\n📤 ข้อความที่จะแจ้งเตือน:")
+    print(final_message)
+    print("\n🚀 ส่งข้อความไปยัง LINE...")
+    send_line_broadcast(final_message)
+    print("✅ เสร็จสิ้นการทำงาน")
