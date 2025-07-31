@@ -1,237 +1,176 @@
-import os
-import re
-import json
-import time
-import random
-import requests
-import pytz
 import pandas as pd
 from datetime import datetime
+import requests
 from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import StaleElementReferenceException
+import re # For regular expressions to extract numbers
 
-# --- ค่าคงที่ ---
-SINGBURI_URL = "https://singburi.thaiwater.net/wl"
-DISCHARGE_URL = 'https://tiwrm.hii.or.th/DATA/REPORT/php/chart/chaopraya/small/chaopraya.php'
-HISTORICAL_DATA_FILE = 'data/dam_discharge_history_complete.csv'
-LINE_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
-LINE_API_URL = "https://api.line.me/v2/bot/message/broadcast"
+# --- User Configuration ---
+# ใส่ LINE Notify Token ของคุณที่นี่
+LINE_NOTIFY_TOKEN = "YOUR_LINE_NOTIFY_TOKEN" # <<<<<<< สำคัญ: โปรดเปลี่ยนค่านี้เป็น Token ของคุณจริงๆ
+WEB_URL = "https://tiwrm.hii.or.th/DATA/REPORT/php/chart/chaopraya/small/chaopraya.php"
+HISTORY_FILE = "dam_discharge_history_complete.csv" # ตรวจสอบให้แน่ใจว่าไฟล์นี้อยู่ในที่เดียวกับ script
 
-# --- ดึงระดับน้ำอินทร์บุรี ---
-def get_inburi_data(url: str, timeout: int = 45, retries: int = 3):
-    opts = Options()
-    opts.add_argument("--headless")
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
-    
-    driver = None
-    for attempt in range(retries):
-        try:
-            driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=opts)
-            driver.get(url)
-            WebDriverWait(driver, timeout).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "th[scope='row']"))
-            )
-            html = driver.page_source
-            
-            soup = BeautifulSoup(html, "html.parser")
-            for th in soup.select("th[scope='row']"):
-                if "อินทร์บุรี" in th.get_text(strip=True):
-                    tr = th.find_parent("tr")
-                    cols = tr.find_all("td")
-                    water_level = float(cols[1].get_text(strip=True))
-                    bank_level = 13.0
-                    print(f"✅ พบข้อมูลอินทร์บุรี: ระดับน้ำ={water_level}, ระดับตลิ่ง={bank_level} (ค่าโดยประมาณ)")
-                    if driver: driver.quit()
-                    return water_level, bank_level
-            
-            print("⚠️ ไม่พบข้อมูลสถานี 'อินทร์บุรี' ในตาราง")
-            if driver: driver.quit()
-            return None, None
-        except StaleElementReferenceException:
-            print(f"⚠️ เจอ Stale Element Reference (ครั้งที่ {attempt + 1}/{retries}), กำลังลองใหม่...")
-            if driver: driver.quit()
-            time.sleep(3)
-            continue
-        except Exception as e:
-            print(f"❌ ERROR: get_inburi_data: {e}")
-            if driver: driver.quit()
-            return None, None
+# --- Helper Functions ---
+def thai_month_to_int(month_thai):
+    """Converts Thai month name to its corresponding integer (1-12) without locale."""
+    month_map = {
+        'มกราคม': 1, 'กุมภาพันธ์': 2, 'มีนาคม': 3, 'เมษายน': 4,
+        'พฤษภาคม': 5, 'มิถุนายน': 6, 'กรกฎาคม': 7, 'สิงหาคม': 8,
+        'กันยายน': 9, 'ตุลาคม': 10, 'พฤศจิกายน': 11, 'ธันวาคม': 12
+    }
+    return month_map.get(month_thai, None)
+
+def load_and_preprocess_history_data(file_path):
+    """
+    Loads CSV history data, preprocesses it by converting Thai month to int,
+    combining date columns, and setting 'date' as index.
+    """
+    df = pd.read_csv(file_path)
+    df.columns = ['day', 'month_thai', 'year', 'discharge_m3_per_s']
+    df['month'] = df['month_thai'].apply(thai_month_to_int)
+    df['year'] = df['year'].apply(lambda x: x - 543 if x > 2400 else x) # Convert BE to CE
+    df['date'] = pd.to_datetime(df[['year', 'month', 'day']], errors='coerce')
+    df.dropna(subset=['date'], inplace=True)
+    df.set_index('date', inplace=True)
+    return df[['discharge_m3_per_s']]
+
+def get_live_discharge_from_web(url):
+    """
+    Fetches live discharge data from the specified web URL, targeting '1,050.00'.
+    Returns the discharge value (float) and current date (datetime object).
+    Returns None, None if data cannot be fetched or parsed.
+    """
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        # Find the <td> tag that contains the text 'ปริมาณน้ำ'
+        discharge_label_td = soup.find('td', string='ปริมาณน้ำ')
+
+        if discharge_label_td:
+            # Find the next sibling <td> which contains the value
+            # It has class 'text_bold' and colspan='2'
+            discharge_value_td = discharge_label_td.find_next_sibling('td', class_='text_bold', colspan='2')
+
+            if discharge_value_td:
+                # Extract the entire text content, e.g., '1,050.00/ 2840 cms'
+                full_text = discharge_value_td.get_text(strip=True)
+                # Use regex to extract the first number, allowing commas and decimals
+                # The pattern r'([\d,\.]+)' will capture '1,050.00'
+                match = re.search(r'([\d,\.]+)', full_text)
+                if match:
+                    discharge_str = match.group(1).replace(',', '') # Remove comma for conversion
+                    live_discharge = float(discharge_str)
+                    live_date = datetime.now() # Get current date for the live data
+                    return live_discharge, live_date
+                else:
+                    print(f"ไม่พบรูปแบบตัวเลขที่ต้องการ (เช่น 1,050.00) ในข้อความ: '{full_text}'")
+            else:
+                print("ไม่พบแท็ก <td> ที่มีค่าปริมาณน้ำ (sibling of 'ปริมาณน้ำ' with class='text_bold' and colspan='2')")
+        else:
+            print("ไม่พบแท็ก <td> ที่มีข้อความ 'ปริมาณน้ำ'")
+
+    except requests.exceptions.RequestException as e:
+        print(f"เกิดข้อผิดพลาดในการเชื่อมต่อหน้าเว็บ: {e}")
+    except Exception as e:
+        print(f"เกิดข้อผิดพลาดในการดึงหรือวิเคราะห์ข้อมูลจากหน้าเว็บ: {e}")
     return None, None
 
-# --- ดึงข้อมูลเขื่อนเจ้าพระยา (เพิ่ม Cache Busting) ---
-def fetch_chao_phraya_dam_discharge(url: str, timeout: int = 30):
-    try:
-        # เพิ่ม headers เพื่อพยายามไม่ให้ติด cache
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Cache-Control': 'no-cache',
-            'Pragma': 'no-cache'
-        }
-        # เพิ่มตัวเลขสุ่มต่อท้าย URL (Cache Busting)
-        cache_buster_url = f"{url}?cb={random.randint(10000, 99999)}"
-        
-        response = requests.get(cache_buster_url, headers=headers, timeout=timeout)
-        response.raise_for_status()
-        response.encoding = 'utf-8'
-        
-        match = re.search(r'var json_data = (\[.*\]);', response.text)
-        if not match:
-            print("❌ ERROR: ไม่พบข้อมูล JSON ในหน้าเว็บ")
-            return None
-            
-        json_string = match.group(1)
-        data = json.loads(json_string)
-        
-        water_storage = data[0]['itc_water']['C13']['storage']
-        if water_storage is not None:
-            if isinstance(water_storage, (int, float)):
-                value = float(water_storage)
-            else:
-                value = float(str(water_storage).replace(',', ''))
-                
-            print(f"✅ พบข้อมูลเขื่อนเจ้าพระยา: {value}")
-            return value
-    except Exception as e:
-        print(f"❌ ERROR: fetch_chao_phraya_dam_discharge: {e}")
-    return None
-
-# --- อ่านและเตรียมข้อมูลย้อนหลัง ---
-def load_historical_data(file_path: str):
-    try:
-        if not os.path.exists(file_path):
-            print(f"⚠️ ไม่พบไฟล์ข้อมูลย้อนหลังที่: {file_path}")
-            return None
-
-        df = pd.read_csv(file_path)
-        df.rename(columns={'ปริมาณน้ำ (ลบ.ม./วินาที)': 'discharge_rate'}, inplace=True)
-        
-        thai_month_map = {
-            'มกราคม': 1, 'กุมภาพันธ์': 2, 'มีนาคม': 3, 'เมษายน': 4, 
-            'พฤษภาคม': 5, 'มิถุนายน': 6, 'กรกฎาคม': 7, 'สิงหาคม': 8, 
-            'กันยายน': 9, 'ตุลาคม': 10, 'พฤศจิกายน': 11, 'ธันวาคม': 12
-        }
-        df['month_num'] = df['เดือน'].map(thai_month_map)
-        
-        df['ad_date'] = pd.to_datetime((df['ปี'] - 543).astype(str) + '-' + df['month_num'].astype(str) + '-' + df['วันที่'].astype(str), errors='coerce')
-        df.dropna(subset=['ad_date'], inplace=True)
-        
-        print("✅ เตรียมข้อมูลย้อนหลังสำเร็จ")
-        return df
-    except Exception as e:
-        print(f"❌ ERROR: ไม่สามารถโหลดข้อมูลย้อนหลังได้: {e}")
-        return None
-
-# --- ค้นหาข้อมูลย้อนหลัง ---
-def find_historical_discharge(df: pd.DataFrame, target_date: datetime):
-    try:
-        if df is None or df.empty:
-            return None
-        
-        closest_row = df.iloc[(df['ad_date'] - target_date).abs().argsort()[:1]]
-        
-        if not closest_row.empty:
-            historical_discharge = closest_row['discharge_rate'].iloc[0]
-            print(f"✅ พบข้อมูลย้อนหลังสำหรับวันที่ {target_date.strftime('%Y-%m-%d')}: {historical_discharge}")
-            return historical_discharge
-        return None
-    except Exception as e:
-        print(f"❌ ERROR: find_historical_discharge ({target_date.year}): {e}")
-        return None
-
-# --- วิเคราะห์และสร้างข้อความ ---
-def analyze_and_create_message(inburi_level, dam_discharge, bank_height, hist_2567=None, hist_2554=None):
-    distance_to_bank = bank_height - inburi_level
-    
-    hist_2567_text = f"\n  (เทียบปี 2567: {hist_2567:,.0f} ลบ.ม./วินาที)" if hist_2567 is not None else ""
-    hist_2554_text = f"\n  (เทียบปี 2554: {hist_2554:,.0f} ลบ.ม./วินาที)" if hist_2554 is not None else ""
-    
-    if dam_discharge > 2400 or distance_to_bank < 1.0:
-        status_emoji = "🟥"
-        status_title = "‼️ ประกาศเตือนภัยระดับสูงสุด ‼️"
-        recommendation = "คำแนะนำ:\n1. เตรียมพร้อมอพยพหากอยู่ในพื้นที่เสี่ยง\n2. ขนย้ายทรัพย์สินขึ้นที่สูงโดยด่วน\n3. งดใช้เส้นทางสัญจรริมแม่น้ำ"
-    elif dam_discharge > 1800 or distance_to_bank < 2.0:
-        status_emoji = "🟨"
-        status_title = "‼️ ประกาศเฝ้าระวัง ‼️"
-        recommendation = "คำแนะนำ:\n1. บ้านเรือนริมตลิ่งนอกคันกั้นน้ำ ให้เริ่มขนของขึ้นที่สูง\n2. ติดตามสถานการณ์อย่างใกล้ชิด"
-    else:
-        status_emoji = "🟩"
-        status_title = "สถานะปกติ"
-        recommendation = "สถานการณ์น้ำยังปกติ ใช้ชีวิตได้ตามปกติครับ"
-
-    now = datetime.now(pytz.timezone('Asia/Bangkok'))
-    message = (
-        f"{status_emoji} {status_title}\n"
-        f"รายงานสถานการณ์น้ำเจ้าพระยา อ.อินทร์บุรี\n"
-        f"ประจำวันที่: {now.strftime('%d/%m/%Y %H:%M')} น.\n\n"
-        f"• ระดับน้ำ (อินทร์บุรี): {inburi_level:.2f} ม.รทก.\n"
-        f"  (ต่ำกว่าตลิ่งประมาณ {distance_to_bank:.2f} ม.)\n"
-        f"  (ระดับตลิ่ง: {bank_height:.2f} ม.รทก.)\n"
-        f"• เขื่อนเจ้าพระยา: {dam_discharge:,.0f} ลบ.ม./วินาที{hist_2567_text}{hist_2554_text}\n\n"
-        f"{recommendation}"
-    )
-    return message
-
-# --- สร้างข้อความ Error ---
-def create_error_message(inburi_status, discharge_status):
-    now = datetime.now(pytz.timezone('Asia/Bangkok'))
-    return (
-        f"⚙️❌ เกิดข้อผิดพลาดในการดึงข้อมูล ❌⚙️\n"
-        f"เวลา: {now.strftime('%d/%m/%Y %H:%M')} น.\n\n"
-        f"• สถานะข้อมูลระดับน้ำอินทร์บุรี: {inburi_status}\n"
-        f"• สถานะข้อมูลเขื่อนเจ้าพระยา: {discharge_status}\n\n"
-        f"กรุณาตรวจสอบ Log บน GitHub Actions เพื่อดูรายละเอียดข้อผิดพลาดครับ"
-    )
-
-# --- ส่งข้อความ LINE ---
-def send_line_broadcast(message):
-    if not LINE_TOKEN:
-        print("❌ ไม่พบ LINE_CHANNEL_ACCESS_TOKEN!")
+def send_line_notification(message, token):
+    """Sends a notification message to LINE Notify."""
+    if not token or token == "YOUR_LINE_NOTIFY_TOKEN":
+        print("ยังไม่ได้ตั้งค่า LINE Notify Token. ไม่สามารถส่งข้อความได้.")
         return
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"}
-    payload = {"messages": [{"type": "text", "text": message}]}
+
+    url = "https://notify-api.line.me/api/notify"
+    headers = {
+        "Authorization": f"Bearer {token}"
+    }
+    payload = {
+        "message": message
+    }
     try:
-        res = requests.post(LINE_API_URL, headers=headers, json=payload, timeout=10)
-        res.raise_for_status()
-        print("✅ ส่งข้อความ Broadcast สำเร็จ!")
+        response = requests.post(url, headers=headers, data=payload)
+        response.raise_for_status() # Raise an exception for HTTP errors
+        print(f"ส่ง LINE Notification สำเร็จ: {response.json()}")
+    except requests.exceptions.RequestException as e:
+        print(f"เกิดข้อผิดพลาดในการส่ง LINE Notification: {e}")
     except Exception as e:
-        print(f"❌ ERROR: LINE Broadcast: {e}")
+        print(f"เกิดข้อผิดพลาดที่ไม่คาดคิดในการส่ง LINE Notification: {e}")
 
-# --- Main (เพิ่ม Cache Busting) ---
+# --- Main Logic ---
 if __name__ == "__main__":
-    print("=== เริ่มการทำงานระบบแจ้งเตือนน้ำอินทร์บุรี ===")
-    
-    # เพิ่มตัวเลขสุ่มต่อท้าย URL ของ Selenium (Cache Busting)
-    inburi_cache_buster_url = f"{SINGBURI_URL}?cb={random.randint(10000, 99999)}"
-    
-    inburi_level, bank_level = get_inburi_data(inburi_cache_buster_url)
-    dam_discharge = fetch_chao_phraya_dam_discharge(DISCHARGE_URL)
-    
-    historical_df = load_historical_data(HISTORICAL_DATA_FILE)
-    
-    today = datetime.now(pytz.timezone('Asia/Bangkok'))
-    target_date_2024 = today.replace(year=2024)
-    target_date_2011 = today.replace(year=2011)
-    
-    hist_2567 = find_historical_discharge(historical_df, target_date_2024)
-    hist_2554 = find_historical_discharge(historical_df, target_date_2011)
+    print("กำลังเริ่มต้นดึงข้อมูลและเตรียมการแจ้งเตือน...")
 
-    if inburi_level is not None and bank_level is not None and dam_discharge is not None:
-        final_message = analyze_and_create_message(inburi_level, dam_discharge, bank_level, hist_2567, hist_2554)
+    # 1. ดึงข้อมูลสดใหม่จากหน้าเว็บ
+    live_discharge, live_date = get_live_discharge_from_web(WEB_URL)
+
+    if live_discharge is None:
+        print("ไม่สามารถดึงข้อมูลปริมาณน้ำล่าสุดได้. จบการทำงาน.")
+        send_line_notification("แจ้งเตือนสถานการณ์น้ำ: ไม่สามารถดึงข้อมูลล่าสุดจากหน้าเว็บได้", LINE_NOTIFY_TOKEN)
+        # We don't exit here immediately, still try to send notification
+        # Consider if you want to exit or continue with partial information
+        exit() # Exit if live data is not available
+
+    # Format live date to Buddhist Era for display
+    live_date_be_str = f"{live_date.day:02d} {live_date.strftime('%B')} {live_date.year + 543} พ.ศ."
+    live_year_be = live_date.year + 543
+    live_month_day = live_date.strftime('%m-%d') # Format for comparison (e.g., '07-31')
+
+    print(f"ข้อมูลปริมาณน้ำล่าสุด (จากหน้าเว็บ): {live_discharge:.2f} ลบ.ม./วินาที ณ วันที่ {live_date_be_str}") # Changed to .2f for 1050.00
+
+    # 2. โหลดและเตรียมข้อมูลย้อนหลัง
+    history_data = load_and_preprocess_history_data(HISTORY_FILE)
+    history_data['month_day'] = history_data.index.strftime('%m-%d') # Add month_day for easy lookup
+
+    # 3. ดึงข้อมูลย้อนหลังสำหรับวันเดียวกัน
+    discharge_2567 = None
+    discharge_2554 = None
+
+    # Get data for the current month-day in 2024 (2567 BE)
+    current_day_2024_data = history_data[(history_data['year'] == 2024) & (history_data['month_day'] == live_month_day)]
+    if not current_day_2024_data.empty:
+        discharge_2567 = current_day_2024_data['discharge_m3_per_s'].iloc[0]
+
+    # Get data for the current month-day in 2011 (2554 BE)
+    current_day_2011_data = history_data[(history_data['year'] == 2011) & (history_data['month_day'] == live_month_day)]
+    if not current_day_2011_data.empty:
+        discharge_2554 = current_day_2011_data['discharge_m3_per_s'].iloc[0]
+
+    # 4. สร้างข้อความแจ้งเตือน
+    notification_message = f"📢 แจ้งเตือนปริมาณน้ำท้ายเขื่อนเจ้าพระยา (อัปเดต):\n"
+    notification_message += f"ปี {live_year_be} (ล่าสุด ณ {live_date_be_str}): {live_discharge:.2f} ลบ.ม./วินาที\n"
+
+    if discharge_2567 is not None:
+        notification_message += f"เทียบกับปี 2567 ({live_date.strftime('%d %B')} 2567): {discharge_2567:.0f} ลบ.ม./วินาที\n"
     else:
-        inburi_status = "สำเร็จ" if inburi_level is not None else "ล้มเหลว"
-        discharge_status = "สำเร็จ" if dam_discharge is not None else "ล้มเหลว"
-        final_message = create_error_message(inburi_status, discharge_status)
+        notification_message += f"เทียบกับปี 2567 ({live_date.strftime('%d %B')} 2567): ไม่มีข้อมูลย้อนหลัง\n"
 
-    print("\n📤 ข้อความที่จะแจ้งเตือน:")
-    print(final_message)
-    print("\n🚀 ส่งข้อความไปยัง LINE...")
-    send_line_broadcast(final_message)
-    print("✅ เสร็จสิ้นการทำงาน")
+    if discharge_2554 is not None:
+        notification_message += f"เทียบกับปี 2554 ({live_date.strftime('%d %B')} 2554): {discharge_2554:.0f} ลบ.ม./วินาที\n"
+    else:
+        notification_message += f"เทียบกับปี 2554 ({live_date.strftime('%d %B')} 2554): ไม่มีข้อมูลย้อนหลัง\n"
+
+    # Optional: Add a simple comparison alert within the message
+    if discharge_2567 is not None and live_discharge is not None:
+        diff_2567 = live_discharge - discharge_2567
+        if diff_2567 > 0:
+            notification_message += f"  (สูงกว่าปี 2567: {abs(diff_2567):.2f} ลบ.ม./วินาที)\n"
+        elif diff_2567 < 0:
+            notification_message += f"  (ต่ำกว่าปี 2567: {abs(diff_2567):.2f} ลบ.ม./วินาที)\n"
+
+    if discharge_2554 is not None and live_discharge is not None:
+        diff_2554 = live_discharge - discharge_2554
+        if diff_2554 > 0:
+            notification_message += f"  (สูงกว่าปี 2554: {abs(diff_2554):.2f} ลบ.ม./วินาที)\n"
+        elif diff_2554 < 0:
+            notification_message += f"  (ต่ำกว่าปี 2554: {abs(diff_2554):.2f} ลบ.ม./วินาที)\n"
+
+    print("\n--- ข้อความที่จะส่งไปยัง LINE ---")
+    print(notification_message)
+
+    # 5. ส่งแจ้งเตือนผ่าน LINE Notify
+    send_line_notification(notification_message, LINE_NOTIFY_TOKEN)
+
+    print("\nดำเนินการเสร็จสิ้น.")
