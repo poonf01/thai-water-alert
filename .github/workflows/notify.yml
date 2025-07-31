@@ -3,7 +3,7 @@ name: Notify Water Level and Discharge
 on:
   schedule:
     # This cron expression means:
-    # - At minute 30 (07:30 and 17:00 THA)
+    # - At minute 30
     # - At hour 0 (00:xx UTC = 07:xx THA) and 10 (10:xx UTC = 17:xx THA)
     # - On every day of the month
     # - On every month
