@@ -19,7 +19,7 @@ DISCHARGE_URL = 'https://tiwrm.hii.or.th/DATA/REPORT/php/chart/chaopraya/small/c
 LINE_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_API_URL = "https://api.line.me/v2/bot/message/broadcast"
 
-# --- ดึงระดับน้ำอินทร์บุรี (จากโค้ดที่ทำงานได้ของคุณ) ---
+# --- ดึงระดับน้ำอินทร์บุรี ---
 def get_inburi_data(url: str, timeout: int = 30):
     opts = Options()
     opts.add_argument("--headless")
@@ -41,7 +41,6 @@ def get_inburi_data(url: str, timeout: int = 30):
                 tr = th.find_parent("tr")
                 cols = tr.find_all("td")
                 water_level = float(cols[1].get_text(strip=True))
-                # หมายเหตุ: ยึดระดับตลิ่งจากโค้ดเดิมของคุณที่ 15.1 หรือปรับแก้ได้ตามต้องการ
                 bank_level = float(cols[2].get_text(strip=True))
                 print(f"✅ พบข้อมูลอินทร์บุรี: ระดับน้ำ={water_level}, ระดับตลิ่ง={bank_level}")
                 return water_level, bank_level
@@ -54,7 +53,7 @@ def get_inburi_data(url: str, timeout: int = 30):
         if driver:
             driver.quit()
 
-# --- ดึงข้อมูลเขื่อนเจ้าพระยา (จากโค้ด JSON ที่ยอดเยี่ยมของคุณ) ---
+# --- ดึงข้อมูลเขื่อนเจ้าพระยา ---
 def fetch_chao_phraya_dam_discharge(url: str, timeout: int = 30):
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
@@ -72,15 +71,18 @@ def fetch_chao_phraya_dam_discharge(url: str, timeout: int = 30):
         
         water_storage = data[0]['itc_water']['C13']['storage']
         if water_storage:
-            print(f"✅ พบข้อมูลเขื่อนเจ้าพระยา: {water_storage}")
-            return float(water_storage)
+            # --- จุดที่แก้ไข ---
+            # แปลงเป็น string, ลบ comma, แล้วค่อยแปลงเป็น float
+            value = float(str(water_storage).replace(',', ''))
+            print(f"✅ พบข้อมูลเขื่อนเจ้าพระยา: {value}")
+            return value
             
     except Exception as e:
         print(f"❌ ERROR: fetch_chao_phraya_dam_discharge: {e}")
         return None
     return None
 
-# --- วิเคราะห์และสร้างข้อความ (จากโค้ดที่เราร่วมกันพัฒนา) ---
+# --- วิเคราะห์และสร้างข้อความ ---
 def analyze_and_create_message(inburi_level, dam_discharge, bank_height):
     distance_to_bank = bank_height - inburi_level
 
