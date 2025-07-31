@@ -2,14 +2,12 @@
 name: Send Daily Water Level Notification
 
 on:
-  # 1. ตั้งเวลาให้ทำงานอัตโนมัติ (Schedule)
+  # 1. ตั้งเวลาให้ทำงานอัตโนมัติ
   schedule:
     # ทำงานทุกวันเวลา 07:30 และ 16:30 ตามเวลาประเทศไทย (UTC+7)
-    # - 00:30 UTC คือ 07:30 ICT
-    # - 09:30 UTC คือ 16:30 ICT
     - cron: '30 0,9 * * *'
 
-  # 2. อนุญาตให้กดรันเองได้ (Manual Trigger)
+  # 2. อนุญาตให้กดรันเองได้
   workflow_dispatch:
 
 jobs:
@@ -17,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Checkout โค้ดจาก Repository ของคุณ
+      # 1. Checkout โค้ดจาก Repository
       - name: Check out repository code
         uses: actions/checkout@v4
 
@@ -33,7 +31,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # 4. ติดตั้ง Chrome และ ChromeDriver ที่เวอร์ชันตรงกัน (วิธีแก้ไขที่เสถียร)
+      # 4. (ส่วนที่แก้ไข) ติดตั้ง Chrome และ ChromeDriver ที่เวอร์ชันตรงกันอัตโนมัติ
       - name: Set up Chrome and ChromeDriver
         uses: browser-actions/setup-chrome@v1
 
