@@ -34,9 +34,9 @@ def get_singburi_data(url):
 
         driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
         
-        driver.set_page_load_timeout(240) # เพิ่มเวลารอโหลดหน้าเว็บเป็น 4 นาที
+        driver.set_page_load_timeout(240)
         driver.get(url)
-        wait = WebDriverWait(driver, 120) # เพิ่มเวลารอ element เป็น 2 นาที
+        wait = WebDriverWait(driver, 120)
         
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div[aria-labelledby='waterLevel'] table")))
 
@@ -71,23 +71,34 @@ def get_singburi_data(url):
 
 # --- ดึงข้อมูล discharge จากเว็บ HII ---
 def fetch_chao_phraya_dam_discharge():
-    # TODO: หากสคริปต์ไม่ทำงาน ให้ตรวจสอบ Selector ในฟังก์ชันนี้
-    # โดยการเปิดเว็บ DISCHARGE_URL แล้วเช็คโครงสร้าง HTML
+    """
+    ดึงข้อมูลจากเว็บ tiwrm.hii.or.th
+    คืนค่า: อัตราการระบายน้ำ (float) หรือ None หากล้มเหลว
+    """
     try:
         res = requests.get(DISCHARGE_URL, timeout=30)
         res.raise_for_status()
         soup = BeautifulSoup(res.text, 'html.parser')
-        strong_tags = soup.find_all("strong")
 
-        for tag in strong_tags:
-            if "ท้ายเขื่อนเจ้าพระยา" in tag.text:
-                table = tag.find_parent("table")
-                if table:
-                    red_text = table.find("span", class_="text_red")
-                    if red_text and "cms" in red_text.text:
-                        value_text = red_text.text.replace("cms", "").strip()
-                        return float(value_text)
-        print("⚠️ ไม่พบข้อมูล 'ท้ายเขื่อนเจ้าพระยา' ในหน้าเว็บ")
+        # หา cell ที่มีข้อความ "ปริมาณน้ำ"
+        header_cell = soup.find(lambda tag: tag.name == 'td' and 'ปริมาณน้ำ' in tag.text)
+        
+        if header_cell:
+            # ค่าที่ต้องการจะอยู่ใน cell (td) ถัดไป
+            value_cell = header_cell.find_next_sibling('td')
+            if value_cell:
+                full_text = value_cell.text.strip()  # จะได้ค่าประมาณ "1,050.00/ 2840 cms"
+                
+                # แยกข้อความด้วย "/" และเอาส่วนแรก
+                discharge_str = full_text.split('/')[0]
+                
+                # เอเครื่องหมายจุลภาค (comma) ออก แล้วแปลงเป็น float
+                discharge_value = float(discharge_str.replace(',', ''))
+                
+                print(f"✅ พบข้อมูลเขื่อนเจ้าพระยา: {discharge_value}")
+                return discharge_value
+
+        print("⚠️ ไม่พบข้อมูล 'ท้ายเขื่อนเจ้าพระยา' ในหน้าเว็บ (โครงสร้างอาจไม่ตรง)")
         return None
     except Exception as e:
         print(f"❌ ERROR: fetch_chao_phraya_dam_discharge: {e}")
@@ -174,14 +185,13 @@ if __name__ == "__main__":
     print("--------------------------\n")
 
     final_message = ""
-    # ตรวจสอบว่าดึงข้อมูลที่จำเป็นสำเร็จทั้งหมดหรือไม่
     if inburi_level is not None and bank_level is not None and dam_discharge is not None:
         print("✅ ดึงข้อมูลสำเร็จทั้งหมด กำลังสร้างข้อความปกติ...")
         final_message = analyze_and_create_message(inburi_level, dam_discharge, bank_level)
     else:
         print("❌ ดึงข้อมูลไม่สำเร็จอย่างน้อย 1 รายการ กำลังสร้างข้อความแจ้งเตือนข้อผิดพลาด...")
         inburi_status = f"สำเร็จ (ระดับน้ำ={inburi_level}, ตลิ่ง={bank_level})" if inburi_level is not None else "ล้มเหลว"
-        discharge_status = f"สำเร็จ ({dam_discharge})" if dam_discharge is not None else "ล้มเหลว"
+        discharge_status = f"สำเร็จ ({dam_discharge:,.0f})" if dam_discharge is not None else "ล้มเหลว"
         final_message = create_error_message(inburi_status, discharge_status)
 
     print("\n📤 ข้อความที่จะแจ้งเตือน:")
