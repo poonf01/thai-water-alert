@@ -1,32 +1,48 @@
-name: notify
+# ชื่อของ Workflow ที่จะแสดงในหน้า Actions ของ GitHub
+name: Daily Water Level Notification
 
+# กำหนดเงื่อนไขที่จะให้ Workflow นี้ทำงาน
 on:
+  # ตั้งเวลาการทำงานด้วย cron syntax
+  # GitHub Actions ใช้เวลามาตรฐาน UTC
+  # เวลาไทยคือ UTC+7 ดังนั้นต้องลบ 7 ชั่วโมงจากเวลาที่ต้องการ
   schedule:
-    - cron: '30 0 * * *'   # 07:30 ไทย
-    - cron: '30 9 * * *'   # 16:30 ไทย
+    # ทำงานตอน 00:30 UTC ซึ่งเท่ากับ 07:30 ในประเทศไทย
+    - cron: '30 0 * * *'
+    # ทำงานตอน 10:30 UTC ซึ่งเท่ากับ 17:30 ในประเทศไทย
+    - cron: '30 10 * * *'
+
+  # อนุญาตให้กดรัน Workflow นี้ได้เองจากหน้า Actions เพื่อใช้ทดสอบ
   workflow_dispatch:
 
+# กำหนด Job ที่จะทำงานใน Workflow นี้
 jobs:
-  notify:
+  build_and_notify:
+    # กำหนดให้รันบนเครื่องเสมือน (Runner) ของ GitHub ที่เป็น Ubuntu เวอร์ชั่นล่าสุด
     runs-on: ubuntu-latest
+
+    # ขั้นตอนการทำงาน (steps) ที่จะรันตามลำดับ
     steps:
-      - uses: actions/checkout@v4
+      # 1. เช็คเอาท์โค้ดจาก Repository ของคุณลงมาที่ Runner
+      - name: Check out repository
+        uses: actions/checkout@v4
 
-      # --- ส่วนสำคัญที่แก้ไข ---
-      # เปลี่ยนมาใช้วิธีนี้เพื่อติดตั้ง Chrome และ Driver ให้พร้อม
-      - name: Setup Chrome
-        uses: browser-actions/setup-chrome@v1
-
-      - uses: actions/setup-python@v5
+      # 2. ติดตั้ง Python เวอร์ชั่น 3.11
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install Python dependencies
+      # 3. ติดตั้ง Dependencies ที่จำเป็นสำหรับสคริปต์ main.py
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-      
-      - name: Run Python Script
-        run: python main.py
+          pip install requests pytz pandas beautifulsoup4 selenium webdriver-manager openpyxl
+
+      # 4. รันสคริปต์ main.py เพื่อดึงข้อมูลและส่ง LINE
+      - name: Run water level script
+        # กำหนด Environment Variable ที่ชื่อว่า LINE_CHANNEL_ACCESS_TOKEN
+        # โดยดึงค่ามาจาก Repository Secret ที่เราจะตั้งค่าในขั้นตอนถัดไป
         env:
-          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_SECRET }}
+        run: python main.py
