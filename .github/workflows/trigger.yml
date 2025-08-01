@@ -1,0 +1,18 @@
+name: Workflow Trigger
+
+on:
+  schedule:
+    # ตั้งเวลาที่จะให้ไปกดรัน Workflow หลัก ที่นี่
+    # 07:30 และ 16:30 เวลาไทย
+    - cron: '30 0 * * *'
+    - cron: '30 9 * * *'
+
+jobs:
+  trigger_workflow:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger the notification workflow
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.PAT_TOKEN }}
+          event-type: run-notification
