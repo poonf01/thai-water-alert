@@ -2,7 +2,11 @@ name: Daily Water Level Notification
 
 on:
   schedule:
-    - cron: '*/5 * * * *'   # ทุก 5 นาที (UTC)
+    # 07:30 ICT → 00:30 UTC
+    - cron: '30 0 * * *'
+    # 16:00 ICT → 09:00 UTC
+    - cron: '0 9 * * *'
+  workflow_dispatch:
 
 jobs:
   notify:
