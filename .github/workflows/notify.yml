@@ -1,33 +1,28 @@
 name: Daily Water Level Notification
 
 on:
-  # ทำให้ Workflow นี้รอรับคำสั่งจากไฟล์อื่น หรือจากการกดรันเองเท่านั้น
+  schedule:
+    - cron: '0 23,3,7,11 * * *'  # รันที่ 06:00,10:00,14:00,18:00 เวลาไทย (UTC+7)
   workflow_dispatch:
 
 jobs:
   notify:
-    # รันบน ubuntu เวอร์ชั่นล่าสุด
     runs-on: ubuntu-latest
-
     steps:
-      # 1. เช็คเอาท์โค้ดลงมาที่ Runner
       - name: Check out repository
         uses: actions/checkout@v4
 
-      # 2. ติดตั้ง Python
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
           python-version: '3.11'
 
-      # 3. ติดตั้งไลบรารีที่จำเป็น (ไม่ใช้ requirements.txt)
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install requests pytz pandas beautifulsoup4 selenium webdriver-manager openpyxl
 
-      # 4. รันสคริปต์ Python
-      - name: Run Python Script
+      - name: Run Python script
         env:
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
         run: python main.py
