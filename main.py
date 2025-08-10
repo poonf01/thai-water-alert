@@ -199,18 +199,55 @@ def create_error_message(inburi_status, discharge_status):
     )
 
 # --- ส่งข้อความ LINE ---
-def send_line_broadcast(message):
+def send_line_broadcast(message, max_retries: int = 3) -> bool:
+    """
+    ส่งข้อความ broadcast ผ่าน LINE Messaging API และจัดการกรณี rate-limit (HTTP 429) โดย
+    ลองส่งใหม่ตามค่า Retry-After header หรือหน่วงเวลา 60 วินาทีถ้า header ไม่มี
+
+    :param message: ข้อความที่จะส่ง
+    :param max_retries: จำนวนครั้งสูงสุดที่จะพยายาม retry เมื่อเจอ HTTP 429
+    :return: True หากส่งสำเร็จ False หากล้มเหลว
+    """
     if not LINE_TOKEN:
         print("❌ ไม่พบ LINE_CHANNEL_ACCESS_TOKEN!")
-        return
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"}
+        return False
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {LINE_TOKEN}"
+    }
     payload = {"messages": [{"type": "text", "text": message}]}
-    try:
-        res = requests.post(LINE_API_URL, headers=headers, json=payload, timeout=10)
-        res.raise_for_status()
-        print("✅ ส่งข้อความ Broadcast สำเร็จ!")
-    except Exception as e:
-        print(f"❌ ERROR: LINE Broadcast: {e}")
+
+    attempt = 0
+    while attempt < max_retries:
+        try:
+            res = requests.post(LINE_API_URL, headers=headers, json=payload, timeout=10)
+            # หากได้ HTTP 429: Too Many Requests ให้หน่วงเวลาตาม Retry-After หรือ 60 วินาทีแล้วลองใหม่
+            if res.status_code == 429:
+                retry_after_header = res.headers.get('Retry-After')
+                try:
+                    wait_seconds = int(retry_after_header) if retry_after_header and str(retry_after_header).isdigit() else 60
+                except Exception:
+                    wait_seconds = 60
+                attempt += 1
+                print(f"⚠️ LINE API rate limit reached (HTTP 429). Waiting {wait_seconds} seconds before retrying... (attempt {attempt}/{max_retries})")
+                time.sleep(wait_seconds)
+                continue
+            # หาก status ไม่ใช่ 429 ให้ตรวจสอบสถานะอื่น ๆ ด้วย raise_for_status
+            res.raise_for_status()
+            print("✅ ส่งข้อความ Broadcast สำเร็จ!")
+            return True
+        except requests.exceptions.HTTPError as http_err:
+            # เกิด HTTP error อื่น ๆ เช่น 400, 401, 403 ให้หยุด retry และรายงาน
+            print(f"❌ ERROR: LINE Broadcast: {http_err}")
+            return False
+        except Exception as e:
+            # ความผิดพลาดอื่น ๆ เช่น network error
+            print(f"❌ ERROR: LINE Broadcast: {e}")
+            return False
+
+    print("❌ ERROR: LINE Broadcast: exceeded max retries due to rate limiting")
+    return False
 
 # --- Main (เพิ่ม Cache Busting) ---
 if __name__ == "__main__":
