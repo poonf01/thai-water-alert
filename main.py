@@ -20,7 +20,6 @@ from selenium.common.exceptions import StaleElementReferenceException
 # --- ค่าคงที่ ---
 SINGBURI_URL = "https://singburi.thaiwater.net/wl"
 DISCHARGE_URL = 'https://tiwrm.hii.or.th/DATA/REPORT/php/chart/chaopraya/small/chaopraya.php'
-# HISTORICAL_DATA_FILE = 'data/dam_discharge_history_complete.csv' # No longer needed
 LINE_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_API_URL = "https://api.line.me/v2/bot/message/broadcast"
 
@@ -198,25 +197,49 @@ def create_error_message(inburi_status, discharge_status):
         f"กรุณาตรวจสอบ Log บน GitHub Actions เพื่อดูรายละเอียดข้อผิดพลาดครับ"
     )
 
-# --- ส่งข้อความ LINE ---
+# --- ส่งข้อความ LINE (ฉบับปรับปรุง) ---
 def send_line_broadcast(message):
     if not LINE_TOKEN:
         print("❌ ไม่พบ LINE_CHANNEL_ACCESS_TOKEN!")
         return
+
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"}
     payload = {"messages": [{"type": "text", "text": message}]}
-    try:
-        res = requests.post(LINE_API_URL, headers=headers, json=payload, timeout=10)
-        res.raise_for_status()
-        print("✅ ส่งข้อความ Broadcast สำเร็จ!")
-    except Exception as e:
-        print(f"❌ ERROR: LINE Broadcast: {e}")
+    
+    retries = 3 # จำนวนครั้งที่จะลองใหม่
+    delay = 5   # เริ่มต้นรอ 5 วินาที
 
-# --- Main (เพิ่ม Cache Busting) ---
+    for i in range(retries):
+        try:
+            res = requests.post(LINE_API_URL, headers=headers, json=payload, timeout=15)
+            # หากเจอ Error ที่ไม่ใช่ 2xx, บรรทัดนี้จะโยน Exception ออกมา
+            res.raise_for_status() 
+            
+            print("✅ ส่งข้อความ Broadcast สำเร็จ!")
+            return # ออกจากฟังก์ชันเมื่อส่งสำเร็จ
+            
+        except requests.exceptions.HTTPError as err:
+            # ตรวจสอบว่าเป็น Error 429 หรือไม่
+            if err.response.status_code == 429:
+                print(f"⚠️ API แจ้งว่าส่งถี่เกินไป (429), กำลังลองใหม่ในอีก {delay} วินาที... (ครั้งที่ {i + 1}/{retries})")
+                time.sleep(delay)
+                delay *= 2 # เพิ่มเวลาหน่วงเป็นสองเท่า
+            else:
+                # หากเป็น HTTP Error อื่นๆ ให้หยุดทำงาน
+                print(f"❌ ERROR: LINE Broadcast (HTTP Error): {err}")
+                break
+        except Exception as e:
+            # หากเป็น Error อื่นๆ เช่น Network ขาด
+            print(f"❌ ERROR: LINE Broadcast (General Error): {e}")
+            break
+
+    print("❌ ไม่สามารถส่งข้อความได้หลังจากการพยายามหลายครั้ง")
+
+
+# --- Main ---
 if __name__ == "__main__":
     print("=== เริ่มการทำงานระบบแจ้งเตือนน้ำอินทร์บุรี ===")
     
-    # เพิ่มตัวเลขสุ่มต่อท้าย URL ของ Selenium (Cache Busting)
     inburi_cache_buster_url = f"{SINGBURI_URL}?cb={random.randint(10000, 99999)}"
     
     inburi_level, bank_level = get_inburi_data(inburi_cache_buster_url)
