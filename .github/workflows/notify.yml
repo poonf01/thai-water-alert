@@ -4,7 +4,7 @@ name: Daily Water Level Notification
 # run at 07:30 and 16:00 every day in Thailand (Asia/Bangkok, UTC+07), convert those
 # times to UTC (00:30 and 09:00). See GitHub docs for details on cron schedules.
 # The workflow file must live in the `.github/workflows` directory for GitHub to
-# detect and run it【669439309477516†L361-L408】.
+# detect and run it.
 on:
   schedule:
     # 07:30 ICT -> 00:30 UTC
@@ -36,6 +36,7 @@ jobs:
 
       - name: Run Python script
         env:
-          # Provide your LINE channel access token via repository secrets
+          # Provide your LINE secrets via repository secrets
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_GROUP_ID: ${{ secrets.LINE_GROUP_ID }}
         run: python main.py
