@@ -21,7 +21,8 @@ from selenium.common.exceptions import StaleElementReferenceException
 SINGBURI_URL = "https://singburi.thaiwater.net/wl"
 DISCHARGE_URL = 'https://tiwrm.hii.or.th/DATA/REPORT/php/chart/chaopraya/small/chaopraya.php'
 LINE_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
-LINE_API_URL = "https://api.line.me/v2/bot/message/broadcast"
+LINE_GROUP_ID = os.environ.get('LINE_GROUP_ID') # Get Group ID from environment variable
+LINE_PUSH_API_URL = "https://api.line.me/v2/bot/message/push"
 
 # -- อ่านข้อมูลย้อนหลังจาก Excel --
 THAI_MONTHS = {
@@ -198,39 +199,44 @@ def create_error_message(inburi_status, discharge_status):
     )
 
 # --- ส่งข้อความ LINE (ฉบับปรับปรุง) ---
-def send_line_broadcast(message):
+def send_line_push(message):
     if not LINE_TOKEN:
         print("❌ ไม่พบ LINE_CHANNEL_ACCESS_TOKEN!")
         return
+    if not LINE_GROUP_ID:
+        print("❌ ไม่พบ LINE_GROUP_ID! กรุณาตั้งค่าใน GitHub Secrets")
+        return
 
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"}
-    payload = {"messages": [{"type": "text", "text": message}]}
+    # Payload for Push Message
+    payload = {
+        "to": LINE_GROUP_ID,
+        "messages": [{"type": "text", "text": message}]
+    }
     
     retries = 3 # จำนวนครั้งที่จะลองใหม่
     delay = 5   # เริ่มต้นรอ 5 วินาที
 
     for i in range(retries):
         try:
-            res = requests.post(LINE_API_URL, headers=headers, json=payload, timeout=15)
-            # หากเจอ Error ที่ไม่ใช่ 2xx, บรรทัดนี้จะโยน Exception ออกมา
+            # Use the PUSH API URL
+            res = requests.post(LINE_PUSH_API_URL, headers=headers, json=payload, timeout=15)
             res.raise_for_status() 
             
-            print("✅ ส่งข้อความ Broadcast สำเร็จ!")
-            return # ออกจากฟังก์ชันเมื่อส่งสำเร็จ
+            print("✅ ส่งข้อความ Push สำเร็จ!")
+            return
             
         except requests.exceptions.HTTPError as err:
-            # ตรวจสอบว่าเป็น Error 429 หรือไม่
             if err.response.status_code == 429:
                 print(f"⚠️ API แจ้งว่าส่งถี่เกินไป (429), กำลังลองใหม่ในอีก {delay} วินาที... (ครั้งที่ {i + 1}/{retries})")
                 time.sleep(delay)
-                delay *= 2 # เพิ่มเวลาหน่วงเป็นสองเท่า
+                delay *= 2
             else:
-                # หากเป็น HTTP Error อื่นๆ ให้หยุดทำงาน
-                print(f"❌ ERROR: LINE Broadcast (HTTP Error): {err}")
+                print(f"❌ ERROR: LINE Push (HTTP Error): {err}")
+                print(f"    Response: {err.response.text}") # Print error response for more details
                 break
         except Exception as e:
-            # หากเป็น Error อื่นๆ เช่น Network ขาด
-            print(f"❌ ERROR: LINE Broadcast (General Error): {e}")
+            print(f"❌ ERROR: LINE Push (General Error): {e}")
             break
 
     print("❌ ไม่สามารถส่งข้อความได้หลังจากการพยายามหลายครั้ง")
@@ -259,5 +265,5 @@ if __name__ == "__main__":
     print("\n📤 ข้อความที่จะแจ้งเตือน:")
     print(final_message)
     print("\n🚀 ส่งข้อความไปยัง LINE...")
-    send_line_broadcast(final_message)
+    send_line_push(final_message)
     print("✅ เสร็จสิ้นการทำงาน")
