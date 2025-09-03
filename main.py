@@ -139,7 +139,7 @@ def fetch_chao_phraya_dam_discharge(url: str, timeout: int = 30):
     return None
 
 # --- วิเคราะห์และสร้างข้อความ ---
-def analyze_and_create_message(inburi_level, dam_discharge, bank_height, hist_2567=None, hist_2554=None):
+def analyze_and_create_message(inburi_level, dam_discharge, bank_height, hist_2567=None, hist_2554=None, hist_2565=None):
     distance_to_bank = bank_height - inburi_level
     
     ICON = ""
@@ -179,6 +179,8 @@ def analyze_and_create_message(inburi_level, dam_discharge, bank_height, hist_25
     ]
     if hist_2567 is not None:
         msg_lines.append(f"  • ปี 2567: {hist_2567:,} ลบ.ม./วินาที")
+    if hist_2565 is not None:
+        msg_lines.append(f"  • ปี 2565: {hist_2565:,} ลบ.ม./วินาที")
     if hist_2554 is not None:
         msg_lines.append(f"  • ปี 2554: {hist_2554:,} ลบ.ม./วินาที")
     msg_lines += [
@@ -253,10 +255,11 @@ if __name__ == "__main__":
     
     # ดึงข้อมูลย้อนหลังจาก Excel
     hist_2567 = get_historical_from_excel(2567)
+    hist_2565 = get_historical_from_excel(2565)
     hist_2554 = get_historical_from_excel(2554)
 
     if inburi_level is not None and bank_level is not None and dam_discharge is not None:
-        final_message = analyze_and_create_message(inburi_level, dam_discharge, bank_level, hist_2567, hist_2554)
+        final_message = analyze_and_create_message(inburi_level, dam_discharge, bank_level, hist_2567, hist_2554, hist_2565)
     else:
         inburi_status = "สำเร็จ" if inburi_level is not None else "ล้มเหลว"
         discharge_status = "สำเร็จ" if dam_discharge is not None else "ล้มเหลว"
