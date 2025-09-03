@@ -32,31 +32,76 @@ THAI_MONTHS = {
 }
 def get_historical_from_excel(year_be: int) -> int | None:
     """
-    อ่านไฟล์ data/ระดับน้ำปี{year_be}.xlsx
-    คืนค่า discharge (ลบ.ม./วิ) ของวัน–เดือน ปัจจุบัน
-    """
-    path = f"data/ระดับน้ำปี{year_be}.xlsx"
-    try:
-        if not os.path.exists(path):
-            print(f"⚠️ ไม่พบไฟล์ข้อมูลย้อนหลังที่: {path}")
-            return None
-        df = pd.read_excel(path)
-        # เปลี่ยนเป็นแม็ปชื่อคอลัมน์ให้ตรงกับไฟล์ Excel จริง
-        # (ดูชื่อ header ในไฟล์ว่าตรงนี้คือ 'ปริมาณน้ำ (ลบ.ม./วินาที)')
-        df = df.rename(columns={'ปริมาณน้ำ (ลบ.ม./วินาที)': 'discharge'})
-        df['month_num'] = df['เดือน'].map(THAI_MONTHS)
+    อ่านไฟล์ระดับน้ำปี {year_be} จากทั้งโฟลเดอร์ data/ และโฟลเดอร์ปัจจุบัน
+    คืนค่า discharge (ลบ.ม./วิ) ของวัน–เดือนปัจจุบัน (ตามเขตเวลาเอเชีย/กรุงเทพ)
 
-        now = datetime.now(pytz.timezone('Asia/Bangkok'))
-        today_d, today_m = now.day, now.month
-        match = df[(df['วันที่']==today_d) & (df['month_num']==today_m)]
-        if not match.empty:
-            print(f"✅ พบข้อมูลย้อนหลังสำหรับปี {year_be}: {int(match.iloc[0]['discharge'])} ลบ.ม./วินาที")
-            return int(match.iloc[0]['discharge'])
-        else:
-            print(f"⚠️ ไม่พบข้อมูลสำหรับวันที่ {today_d}/{today_m} ในไฟล์ปี {year_be}")
+    รองรับหลายรูปแบบคอลัมน์ เช่น:
+      - มีคอลัมน์ 'เดือน' (ชื่อเดือนภาษาไทย) และ 'วันที่' (ตัวเลข) และคอลัมน์ปริมาณน้ำเป็น 'ปริมาณน้ำ (ลบ.ม./วินาที)' หรือ 'ปริมาณน้ำ (ลบ.ม./วิ)'
+      - มีคอลัมน์ 'วันที่' เป็นชนิด datetime และคอลัมน์ค่าปริมาณน้ำอื่น ๆ (เช่น 'ค่า (ปี 2022)')
+    """
+    import pandas as pd
+    # ค้นหาไฟล์ตามชื่อ
+    possible_paths = [f"data/ระดับน้ำปี{year_be}.xlsx", f"ระดับน้ำปี{year_be}.xlsx", f"/mnt/data/ระดับน้ำปี{year_be}.xlsx"]
+    file_path = None
+    for p in possible_paths:
+        if os.path.exists(p):
+            file_path = p
+            break
+    if file_path is None:
+        print(f"⚠️ ไม่พบไฟล์ข้อมูลย้อนหลังปี {year_be} ใน {possible_paths}")
+        return None
+    try:
+        df = pd.read_excel(file_path)
+        # หาคอลัมน์ค่าปริมาณน้ำที่อาจจะมีหลายชื่อ
+        discharge_col = None
+        for col in df.columns:
+            name = str(col)
+            if 'ลบ.ม.' in name or 'discharge' in name or 'ค่า' in name:
+                discharge_col = col
+                break
+        if discharge_col is None:
+            print(f"⚠️ ไฟล์ {file_path} ไม่มีคอลัมน์ปริมาณน้ำที่รู้จัก")
             return None
+        df = df.rename(columns={discharge_col: 'discharge'})
+        # ตรวจว่าเรามีคอลัมน์ 'เดือน' และ 'วันที่' แยกหรือไม่
+        if 'เดือน' in df.columns and 'วันที่' in df.columns:
+            # กรณีนี้ 'วันที่' เป็นตัวเลข (ไม่ใช่ datetime) และ 'เดือน' เป็นชื่อภาษาไทย
+            df['month_num'] = df['เดือน'].map(THAI_MONTHS)
+            df['day_num'] = df['วันที่']
+        elif 'วันที่' in df.columns:
+            # แปลง 'วันที่' ให้เป็น datetime หากไม่ใช่
+            if not pd.api.types.is_datetime64_any_dtype(df['วันที่']):
+                df['date'] = pd.to_datetime(df['วันที่'], errors='coerce')
+            else:
+                df['date'] = df['วันที่']
+            df['month_num'] = df['date'].dt.month
+            df['day_num'] = df['date'].dt.day
+        else:
+            print(f"⚠️ ไฟล์ {file_path} ไม่มีคอลัมน์ 'วันที่' ที่คาดหวัง")
+            return None
+        # วันที่วันนี้
+        now = datetime.now(pytz.timezone('Asia/Bangkok'))
+        today_d = now.day
+        today_m = now.month
+        match = df[(df['day_num'] == today_d) & (df['month_num'] == today_m)]
+        if not match.empty:
+            val = match.iloc[0]['discharge']
+            # แปลงเป็นตัวเลข int หากจำเป็น
+            try:
+                # หากมี comma
+                val_int = int(val)
+            except Exception:
+                try:
+                    val_int = int(str(val).replace(',', ''))
+                except Exception:
+                    val_int = None
+            if val_int is not None:
+                print(f"✅ พบข้อมูลย้อนหลังสำหรับปี {year_be}: {val_int} ลบ.ม./วินาที (ไฟล์: {file_path})")
+                return val_int
+        print(f"⚠️ ไม่พบข้อมูลสำหรับวันที่ {today_d}/{today_m} ในไฟล์ปี {year_be} (ไฟล์: {file_path})")
+        return None
     except Exception as e:
-        print(f"❌ ERROR: ไม่สามารถโหลดข้อมูลย้อนหลังจาก Excel ได้ ({path}): {e}")
+        print(f"❌ ERROR: ไม่สามารถโหลดข้อมูลย้อนหลังจาก Excel ได้ ({file_path}): {e}")
         return None
 
 # --- ดึงระดับน้ำอินทร์บุรี ---
@@ -139,7 +184,7 @@ def fetch_chao_phraya_dam_discharge(url: str, timeout: int = 30):
     return None
 
 # --- วิเคราะห์และสร้างข้อความ ---
-def analyze_and_create_message(inburi_level, dam_discharge, bank_height, hist_2567=None, hist_2554=None, hist_2565=None):
+def analyze_and_create_message(inburi_level, dam_discharge, bank_height, hist_2567=None, hist_2565=None, hist_2554=None):
     distance_to_bank = bank_height - inburi_level
     
     ICON = ""
@@ -253,13 +298,20 @@ if __name__ == "__main__":
     inburi_level, bank_level = get_inburi_data(inburi_cache_buster_url)
     dam_discharge = fetch_chao_phraya_dam_discharge(DISCHARGE_URL)
     
-    # ดึงข้อมูลย้อนหลังจาก Excel
+    # ดึงข้อมูลย้อนหลังจาก Excel (ตามวันวันนี้)
     hist_2567 = get_historical_from_excel(2567)
     hist_2565 = get_historical_from_excel(2565)
     hist_2554 = get_historical_from_excel(2554)
 
     if inburi_level is not None and bank_level is not None and dam_discharge is not None:
-        final_message = analyze_and_create_message(inburi_level, dam_discharge, bank_level, hist_2567, hist_2554, hist_2565)
+        final_message = analyze_and_create_message(
+            inburi_level,
+            dam_discharge,
+            bank_level,
+            hist_2567=hist_2567,
+            hist_2565=hist_2565,
+            hist_2554=hist_2554,
+        )
     else:
         inburi_status = "สำเร็จ" if inburi_level is not None else "ล้มเหลว"
         discharge_status = "สำเร็จ" if dam_discharge is not None else "ล้มเหลว"
