@@ -10,8 +10,6 @@ from datetime import datetime
 from bs4 import BeautifulSoup
 
 # --- ส่วนของ Selenium ---
-# ตรวจสอบให้แน่ใจว่าได้ติดตั้ง selenium และ webdriver-manager แล้ว
-# ในไฟล์ GitHub Actions ของคุณมีการติดตั้งแล้ว: beautifulsoup4 selenium webdriver-manager
 try:
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
@@ -33,18 +31,15 @@ LINE_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_GROUP_ID = os.environ.get('LINE_GROUP_ID')
 LINE_PUSH_API_URL = "https://api.line.me/v2/bot/message/push"
 
-# --- ฟังก์ชันสำหรับตั้งค่า Selenium Driver (สำคัญมากสำหรับ GitHub Actions) ---
+# --- ฟังก์ชันสำหรับตั้งค่า Selenium Driver ---
 def setup_driver():
-    """ตั้งค่า Chrome Driver สำหรับทำงานแบบ Headless บน Server (เช่น GitHub Actions)"""
+    """ตั้งค่า Chrome Driver สำหรับทำงานแบบ Headless บน Server"""
     chrome_options = Options()
-    chrome_options.add_argument("--headless")  # รันเบราว์เซอร์โดยไม่มีหน้าจอ
+    chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
-    # ตั้งค่า User-Agent เพื่อเลียนแบบเบราว์เซอร์จริง
     chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36')
-    
-    # ใช้ Service object เพื่อติดตั้ง/จัดการ chromedriver อัตโนมัติ
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=chrome_options)
     return driver
@@ -63,6 +58,7 @@ def get_historical_from_excel(year_be: int) -> int | None:
             file_path = p
             break
     if file_path is None:
+        print(f"⚠️ ไม่พบไฟล์ข้อมูลย้อนหลังปี {year_be}")
         return None
     try:
         df = pd.read_excel(file_path)
@@ -71,8 +67,7 @@ def get_historical_from_excel(year_be: int) -> int | None:
             if 'ลบ.ม.' in str(col) or 'discharge' in str(col) or 'ค่า' in str(col):
                 discharge_col = col
                 break
-        if discharge_col is None:
-            return None
+        if discharge_col is None: return None
         df = df.rename(columns={discharge_col: 'discharge'})
         if 'เดือน' in df.columns and 'วันที่' in df.columns:
             df['month_num'] = df['เดือน'].map(THAI_MONTHS)
@@ -81,9 +76,7 @@ def get_historical_from_excel(year_be: int) -> int | None:
             df['date'] = pd.to_datetime(df['วันที่'], errors='coerce')
             df['month_num'] = df['date'].dt.month
             df['day_num'] = df['date'].dt.day
-        else:
-            return None
-
+        else: return None
         now = datetime.now(pytz.timezone('Asia/Bangkok'))
         match = df[(df['day_num'] == now.day) & (df['month_num'] == now.month)]
         if not match.empty:
@@ -97,37 +90,43 @@ def get_historical_from_excel(year_be: int) -> int | None:
         print(f"❌ ERROR: ไม่สามารถโหลดข้อมูลย้อนหลังจาก Excel ได้ ({file_path}): {e}")
         return None
 
-# --- [แก้ไข] ดึงระดับน้ำอินทร์บุรีโดยใช้ Selenium ---
+# --- [แก้ไข] ดึงระดับน้ำอินทร์บุรีโดยใช้ Selenium (ปรับปรุงการค้นหา) ---
 def get_inburi_data(url: str, timeout: int = 45):
     if not SELENIUM_AVAILABLE:
         return None, None
-        
     driver = setup_driver()
     try:
         driver.get(url)
-        # **สำคัญ:** รอจนกว่าจะเจอ element ที่มีข้อความ "อินทร์บุรี" แสดงขึ้นมา (รอสูงสุด 30 วินาที)
         WebDriverWait(driver, 30).until(
             EC.presence_of_element_located((By.XPATH, "//*[contains(text(), 'อินทร์บุรี')]"))
         )
-        
-        # เมื่อเจอแล้ว ก็ดึง HTML ทั้งหน้ามาวิเคราะห์ด้วย BeautifulSoup
         html = driver.page_source
         soup = BeautifulSoup(html, "html.parser")
         
-        row = soup.find('tr', string=re.compile('อินทร์บุรี'))
-        if row is None:
+        # --- จุดที่แก้ไข ---
+        # 1. ค้นหาทุกแถวในตาราง
+        all_rows = soup.find_all('tr')
+        target_row = None
+        # 2. วนลูปเพื่อหาแถวที่มีคำว่า 'อินทร์บุรี'
+        for row in all_rows:
+            if 'อินทร์บุรี' in row.get_text():
+                target_row = row
+                break # เจอแล้วออกจากลูป
+        # --- จบส่วนที่แก้ไข ---
+        
+        if target_row is None:
             print("⚠️ ไม่พบข้อมูลสถานี 'อินทร์บุรี' ในตาราง (หลังใช้ Selenium)")
             return None, None
 
-        row_text = row.get_text(separator=' ', strip=True)
-        num_strs = re.findall(r'[0-9]+(?:\.[0-9]+)?', row_text) # Regex ง่ายๆ ก็พอ
+        row_text = target_row.get_text(separator=' ', strip=True)
+        # ใช้ Regex ที่ปรับปรุงเล็กน้อยให้ครอบคลุมตัวเลขทุกรูปแบบ
+        num_strs = re.findall(r'[-+]?\d*\.\d+|\d+', row_text)
         values = [float(ns) for ns in num_strs]
 
         if not values or len(values) < 2:
             print("⚠️ ไม่พบข้อมูลตัวเลขที่เพียงพอสำหรับสถานี 'อินทร์บุรี'")
             return None, None
         
-        # ค่าแรกคือระดับน้ำ, ค่าที่สองคือระดับตลิ่ง (จากโครงสร้างเว็บ)
         water_level = values[0]
         bank_level = values[1]
         
@@ -137,32 +136,25 @@ def get_inburi_data(url: str, timeout: int = 45):
         print(f"⚠️ ERROR: get_inburi_data (Selenium): {e}")
         return None, None
     finally:
-        driver.quit() # ปิดเบราว์เซอร์เสมอ
+        driver.quit()
 
-# --- [แก้ไข] ดึงข้อมูลเขื่อนเจ้าพระยาโดยใช้ Selenium ---
+# --- ดึงข้อมูลเขื่อนเจ้าพระยาโดยใช้ Selenium (เหมือนเดิม) ---
 def fetch_chao_phraya_dam_discharge(url: str, timeout: int = 30):
     if not SELENIUM_AVAILABLE:
         return None
-
     driver = setup_driver()
     try:
         driver.get(url)
-        # รอให้ element ที่มีข้อมูลโหลดเสร็จ (อาจเป็นกราฟหรือตาราง)
-        # ในที่นี้เรารอแค่ script tag ที่มีคำว่า 'json_data'
         WebDriverWait(driver, 30).until(
             EC.presence_of_element_located((By.XPATH, "//script[contains(text(), 'json_data')]"))
         )
-
         html = driver.page_source
-        # ค้นหาด้วย Regex เหมือนเดิม แต่ตอนนี้ข้อมูลจะอยู่ใน html แล้ว
         match = re.search(r'json_data\s*=\s*(\[.*?\]);', html, flags=re.DOTALL)
         if not match:
             print("⚠️ ไม่พบตัวแปร 'json_data' ในหน้าเว็บ (หลังใช้ Selenium)")
             return None
-        
         json_string = match.group(1)
         data = json.loads(json_string)
-
         for entry in data:
             if isinstance(entry, dict) and 'itc_water' in entry and 'C13' in entry['itc_water']:
                 storage_val = entry['itc_water']['C13'].get('storage')
@@ -170,7 +162,6 @@ def fetch_chao_phraya_dam_discharge(url: str, timeout: int = 30):
                     value = float(str(storage_val).replace(',', ''))
                     print(f"✅ พบข้อมูลเขื่อนเจ้าพระยา: {value}")
                     return value
-        
         print("⚠️ พบ json_data แต่ไม่พบข้อมูล 'C13.storage'")
         return None
     except Exception as e:
@@ -183,7 +174,6 @@ def fetch_chao_phraya_dam_discharge(url: str, timeout: int = 30):
 def analyze_and_create_message(inburi_level, dam_discharge, bank_height, hist_2567=None, hist_2565=None, hist_2554=None):
     distance_to_bank = bank_height - inburi_level
     ICON, HEADER, summary_text = "", "", ""
-
     if dam_discharge > 2400 or distance_to_bank < 1.0:
         ICON, HEADER = "🟥", "‼️ ประกาศเตือนภัยระดับสูงสุด ‼️"
         summary_text = "คำแนะนำ:\n1. เตรียมพร้อมอพยพหากอยู่ในพื้นที่เสี่ยง\n2. ขนย้ายทรัพย์สินขึ้นที่สูงโดยด่วน\n3. งดใช้เส้นทางสัญจรริมแม่น้ำ"
@@ -193,10 +183,8 @@ def analyze_and_create_message(inburi_level, dam_discharge, bank_height, hist_25
     else:
         ICON, HEADER = "🟩", "สถานะปกติ"
         summary_text = "สถานการณ์น้ำยังปกติ ใช้ชีวิตได้ตามปกติครับ"
-
     now = datetime.now(pytz.timezone('Asia/Bangkok'))
     TIMESTAMP = now.strftime('%d/%m/%Y %H:%M')
-
     msg_lines = [
         f"{ICON} {HEADER}", "",
         f"📍 รายงานสถานการณ์น้ำเจ้าพระยา จ.อ.อินทร์บุรี", f"🗓️ วันที่: {TIMESTAMP} น.", "",
@@ -239,14 +227,11 @@ def send_line_push(message):
 # --- Main ---
 if __name__ == "__main__":
     print("=== เริ่มการทำงานระบบแจ้งเตือนน้ำอินทร์บุรี ===")
-    
     inburi_level, bank_level = get_inburi_data(SINGBURI_URL)
     dam_discharge = fetch_chao_phraya_dam_discharge(DISCHARGE_URL)
-    
     hist_2567 = get_historical_from_excel(2567)
     hist_2565 = get_historical_from_excel(2565)
     hist_2554 = get_historical_from_excel(2554)
-
     if inburi_level is not None and bank_level is not None and dam_discharge is not None:
         final_message = analyze_and_create_message(
             inburi_level, dam_discharge, bank_level,
@@ -256,7 +241,6 @@ if __name__ == "__main__":
         inburi_status = "สำเร็จ" if inburi_level is not None else "ล้มเหลว"
         discharge_status = "สำเร็จ" if dam_discharge is not None else "ล้มเหลว"
         final_message = create_error_message(inburi_status, discharge_status)
-
     print("\n📤 ข้อความที่จะแจ้งเตือน:")
     print(final_message)
     print("\n🚀 ส่งข้อความไปยัง LINE...")
