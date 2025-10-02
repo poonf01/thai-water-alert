@@ -194,10 +194,11 @@ def send_line_push(message):
         print("✅ ส่งข้อความ Push สำเร็จ!")
     except Exception as e: print(f"❌ ERROR: LINE Push: {e}")
 
-# --- Main (ไม่แก้ไข) ---
+# --- Main (แก้ไขส่วนนี้) ---
 if __name__ == "__main__":
     print("=== เริ่มการทำงานระบบแจ้งเตือนน้ำอินทร์บุรี ===")
     inburi_level, bank_level = get_inburi_data(SINGBURI_URL)
+    bank_level = 13.0 # <--- บังคับค่าระดับตลิ่งเป็น 13 เมตร
     dam_discharge = fetch_chao_phraya_dam_discharge(DISCHARGE_URL)
     hist_2567 = get_historical_from_excel(2567); hist_2565 = get_historical_from_excel(2565); hist_2554 = get_historical_from_excel(2554)
     if inburi_level is not None and bank_level is not None and dam_discharge is not None:
