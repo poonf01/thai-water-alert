@@ -8,14 +8,26 @@ import pytz
 import pandas as pd
 from datetime import datetime
 from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import StaleElementReferenceException
+# พยายามนำเข้า Selenium และโมดูลที่เกี่ยวข้อง เผื่อในสภาพแวดล้อมไม่มีติดตั้ง
+try:
+    from selenium import webdriver  # type: ignore
+    from selenium.webdriver.chrome.options import Options  # type: ignore
+    from selenium.webdriver.chrome.service import Service  # type: ignore
+    from webdriver_manager.chrome import ChromeDriverManager  # type: ignore
+    from selenium.webdriver.common.by import By  # type: ignore
+    from selenium.webdriver.support.ui import WebDriverWait  # type: ignore
+    from selenium.webdriver.support import expected_conditions as EC  # type: ignore
+    from selenium.common.exceptions import StaleElementReferenceException  # type: ignore
+except Exception:
+    # หากไม่สามารถนำเข้าได้ ให้ตั้งค่าเป็น None เพื่อให้สคริปต์ยังทำงานได้เมื่อไม่ใช้ Selenium
+    webdriver = None  # type: ignore
+    Options = None  # type: ignore
+    Service = None  # type: ignore
+    ChromeDriverManager = None  # type: ignore
+    By = None  # type: ignore
+    WebDriverWait = None  # type: ignore
+    EC = None  # type: ignore
+    StaleElementReferenceException = Exception
 
 # --- ค่าคงที่ ---
 SINGBURI_URL = "https://singburi.thaiwater.net/wl"
@@ -106,81 +118,179 @@ def get_historical_from_excel(year_be: int) -> int | None:
 
 # --- ดึงระดับน้ำอินทร์บุรี ---
 def get_inburi_data(url: str, timeout: int = 45, retries: int = 3):
-    opts = Options()
-    opts.add_argument("--headless")
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
-    
-    driver = None
+    """
+    ดึงข้อมูลระดับน้ำจากหน้าเว็บศูนย์ข้อมูลน้ำของจังหวัดสิงห์บุรี
+
+    ฟังก์ชันนี้พยายามดึงหน้า HTML ด้วย requests แทนการใช้ Selenium เพื่อลดข้อผิดพลาดจาก
+    headless browser และทำให้ใช้งานง่ายขึ้นบน GitHub Actions หรือสภาพแวดล้อมที่ไม่มี X-Server.
+
+    ขั้นตอนการทำงาน:
+    1. ส่ง HTTP GET ไปยัง URL ที่ระบุ พร้อมตั้ง header เพื่อป้องกันการบล็อกจากเว็บไซต์
+    2. แปลงผลลัพธ์เป็น BeautifulSoup แล้วค้นหาแถว (tr) ที่มีคำว่า "อินทร์บุรี"
+    3. เมื่อพบแถวดังกล่าว จะดึงตัวเลขทั้งหมดในแถว ด้วย regex แล้วเลือกค่าแรกเป็น
+       ระดับน้ำ และค่าที่สองเป็นระดับตลิ่ง หากไม่พบค่าที่สองจะกำหนดไว้ล่วงหน้า
+
+    หากเกิดข้อผิดพลาดระหว่างการดึงข้อมูล จะลองใหม่ตามจำนวน retries ที่กำหนด
+
+    Args:
+        url (str): URL ของหน้าเว็บที่ต้องการดึงข้อมูล
+        timeout (int): ระยะเวลารอแต่ละครั้ง (วินาที)
+        retries (int): จำนวนครั้งที่พยายามใหม่ เมื่อเกิดข้อผิดพลาด
+
+    Returns:
+        tuple[float | None, float | None]: (ระดับน้ำ, ระดับตลิ่ง) หรือ (None, None) หากไม่สามารถดึงได้
+    """
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
+                      'AppleWebKit/537.36 (KHTML, like Gecko) ' +
+                      'Chrome/91.0.4472.124 Safari/537.36',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache'
+    }
     for attempt in range(retries):
         try:
-            driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=opts)
-            driver.get(url)
-            WebDriverWait(driver, timeout).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "th[scope='row']"))
-            )
-            html = driver.page_source
-            
+            # เพิ่ม cache busting เพื่อป้องกันการเก็บหน้าไว้ใน cache ของเซิร์ฟเวอร์
+            cache_buster_url = f"{url}&cb={random.randint(10000, 99999)}" if '?' in url else f"{url}?cb={random.randint(10000, 99999)}"
+            resp = requests.get(cache_buster_url, headers=headers, timeout=timeout)
+            resp.raise_for_status()
+            html = resp.text
             soup = BeautifulSoup(html, "html.parser")
-            for th in soup.select("th[scope='row']"):
-                if "อินทร์บุรี" in th.get_text(strip=True):
-                    tr = th.find_parent("tr")
-                    cols = tr.find_all("td")
-                    water_level = float(cols[1].get_text(strip=True))
-                    bank_level = 13.0
-                    print(f"✅ พบข้อมูลอินทร์บุรี: ระดับน้ำ={water_level}, ระดับตลิ่ง={bank_level} (ค่าโดยประมาณ)")
-                    if driver: driver.quit()
-                    return water_level, bank_level
-            
-            print("⚠️ ไม่พบข้อมูลสถานี 'อินทร์บุรี' ในตาราง")
-            if driver: driver.quit()
-            return None, None
-        except StaleElementReferenceException:
-            print(f"⚠️ เจอ Stale Element Reference (ครั้งที่ {attempt + 1}/{retries}), กำลังลองใหม่...")
-            if driver: driver.quit()
+
+            # ค้นหาแถวที่มีคำว่า "อินทร์บุรี" ในข้อความทั้งหมด
+            row = None
+            for tr in soup.find_all('tr'):
+                try:
+                    if 'อินทร์บุรี' in tr.get_text():
+                        row = tr
+                        break
+                except Exception:
+                    continue
+            if row is None:
+                print("⚠️ ไม่พบข้อมูลสถานี 'อินทร์บุรี' ในตาราง")
+                return None, None
+
+            # แปลงข้อความในแถวเป็นตัวเลขทั้งหมด เช่น 13.28, 15.1, 0.79
+            row_text = row.get_text(separator=' ', strip=True)
+            # หาเลขทศนิยม/จำนวนเต็ม โดยรองรับเครื่องหมาย comma
+            num_strs = re.findall(r'[0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?', row_text)
+            # แปลงเป็น float โดยลบ comma
+            values = []
+            for ns in num_strs:
+                try:
+                    values.append(float(ns.replace(',', '')))
+                except Exception:
+                    continue
+            if not values:
+                print("⚠️ ไม่พบข้อมูลตัวเลขสำหรับสถานี 'อินทร์บุรี'")
+                return None, None
+            # เดาค่า: ตัวแรกเป็นระดับน้ำ ตัวถัดไปที่มากกว่าหรือเท่ากันเป็นระดับตลิ่ง
+            water_level = values[0]
+            bank_level = None
+            for v in values[1:]:
+                if v >= water_level:
+                    bank_level = v
+                    break
+            if bank_level is None:
+                # หากไม่มีค่าใหญ่กว่า แสดงว่ามีเพียงค่าระดับน้ำ ให้ใช้ค่าตลิ่งมาตรฐาน 13.0 ม.รทก.
+                bank_level = 13.0
+
+            print(f"✅ พบข้อมูลอินทร์บุรี: ระดับน้ำ={water_level}, ระดับตลิ่ง={bank_level}")
+            return water_level, bank_level
+        except Exception as e:
+            print(f"⚠️ ERROR: get_inburi_data (ครั้งที่ {attempt + 1}/{retries}): {e}")
+            # รอแล้วลองใหม่
             time.sleep(3)
             continue
-        except Exception as e:
-            print(f"❌ ERROR: get_inburi_data: {e}")
-            if driver: driver.quit()
-            return None, None
     return None, None
 
 # --- ดึงข้อมูลเขื่อนเจ้าพระยา (เพิ่ม Cache Busting) ---
-def fetch_chao_phraya_dam_discharge(url: str, timeout: int = 30):
-    try:
-        # เพิ่ม headers เพื่อพยายามไม่ให้ติด cache
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Cache-Control': 'no-cache',
-            'Pragma': 'no-cache'
-        }
-        # เพิ่มตัวเลขสุ่มต่อท้าย URL (Cache Busting)
-        cache_buster_url = f"{url}?cb={random.randint(10000, 99999)}"
-        
-        response = requests.get(cache_buster_url, headers=headers, timeout=10)
-        response.raise_for_status()
-        response.encoding = 'utf-8'
-        
-        match = re.search(r'var json_data = (\[.*\]);', response.text)
-        if not match:
-            print("❌ ERROR: ไม่พบข้อมูล JSON ในหน้าเว็บ")
+def fetch_chao_phraya_dam_discharge(url: str, timeout: int = 30, retries: int = 3):
+    """
+    ดึงข้อมูลปริมาณน้ำปล่อยเขื่อนเจ้าพระยา
+
+    เนื่องจากหน้าเว็บอาจมีการปรับโครงสร้าง JavaScript อยู่เสมอ ทำให้การดึงข้อมูลด้วย
+    regex เดิมอาจไม่พบข้อมูล เราจึงเพิ่มการตรวจสอบหลายรูปแบบ เช่น ตัวแปร json_data ที่มี
+    การขึ้นต้นด้วยคำว่า json_data หรือค้นหาข้อมูล "C13" และคีย์ "storage" ในหน้าทั้งหมด
+    หากพบก็จะพยายามแปลงเป็นตัวเลข float โดยลบ comma.
+
+    Args:
+        url (str): URL ที่ชี้ไปยังหน้า PHP ที่มีข้อมูล
+        timeout (int): ระยะเวลารอคำตอบ (วินาที)
+        retries (int): จำนวนครั้งที่จะลองใหม่เมื่อเจอข้อผิดพลาด
+
+    Returns:
+        float | None: ค่าปริมาณน้ำ (ลบ.ม./วินาที) หรือ None หากไม่พบข้อมูล
+    """
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
+                      'AppleWebKit/537.36 (KHTML, like Gecko) ' +
+                      'Chrome/91.0.4472.124 Safari/537.36',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache'
+    }
+    for attempt in range(retries):
+        try:
+            cache_buster_url = f"{url}?cb={random.randint(10000, 99999)}"
+            response = requests.get(cache_buster_url, headers=headers, timeout=timeout)
+            response.raise_for_status()
+            response.encoding = 'utf-8'
+            text = response.text
+
+            # รูปแบบเดิม: var json_data = [ ... ]; อาจมีการขึ้นต้นด้วยคำว่า const/let หรือมีช่องว่าง
+            match = re.search(r'json_data\s*=\s*(\[.*?\]);', text, flags=re.DOTALL)
+            data = None
+            if match:
+                json_string = match.group(1)
+                try:
+                    data = json.loads(json_string)
+                except Exception as e:
+                    # บางครั้ง JSON มี comment หรือ comma เกิน ต้องทำความสะอาดเบื้องต้น
+                    cleaned = re.sub(r'/\*.*?\*/', '', json_string, flags=re.DOTALL)  # ลบคอมเมนต์
+                    cleaned = re.sub(r',\s*\]', ']', cleaned)  # ลบ comma ท้ายอาร์เรย์
+                    data = json.loads(cleaned)
+            # หากพาร์ส json_data สำเร็จ
+            if isinstance(data, list) and data:
+                # วนหา C13.Storage ภายในข้อมูล
+                for entry in data:
+                    if not isinstance(entry, dict):
+                        continue
+                    # กรณีมี itc_water แล้วมี C13
+                    if 'itc_water' in entry and isinstance(entry['itc_water'], dict):
+                        c13 = entry['itc_water'].get('C13')
+                        if isinstance(c13, dict) and 'storage' in c13:
+                            raw_val = c13['storage']
+                            try:
+                                value = float(raw_val) if isinstance(raw_val, (int, float)) else float(str(raw_val).replace(',', ''))
+                                print(f"✅ พบข้อมูลเขื่อนเจ้าพระยา: {value}")
+                                return value
+                            except Exception:
+                                pass
+                    # กรณีมี C13 อยู่ใน entry
+                    if 'C13' in entry and isinstance(entry['C13'], dict) and 'storage' in entry['C13']:
+                        raw_val = entry['C13']['storage']
+                        try:
+                            value = float(raw_val) if isinstance(raw_val, (int, float)) else float(str(raw_val).replace(',', ''))
+                            print(f"✅ พบข้อมูลเขื่อนเจ้าพระยา: {value}")
+                            return value
+                        except Exception:
+                            pass
+            # หากไม่พบ json_data ให้ค้นหารูปแบบตรง ๆ ใน HTML (เช่น "C13": {"storage": "2,400"})
+            pattern = re.search(r'"C13"\s*:\s*\{[^\}]*?"storage"\s*:\s*"?([0-9,\.]+)', text)
+            if pattern:
+                num_str = pattern.group(1)
+                try:
+                    value = float(num_str.replace(',', ''))
+                    print(f"✅ พบข้อมูลเขื่อนเจ้าพระยา: {value}")
+                    return value
+                except Exception:
+                    pass
+
+            print("⚠️ ไม่พบข้อมูล JSON หรือ storage สำหรับ 'C13' ในหน้าเว็บนี้")
             return None
-            
-        json_string = match.group(1)
-        data = json.loads(json_string)
-        
-        water_storage = data[0]['itc_water']['C13']['storage']
-        if water_storage is not None:
-            if isinstance(water_storage, (int, float)):
-                value = float(water_storage)
-            else:
-                value = float(str(water_storage).replace(',', ''))
-                
-            print(f"✅ พบข้อมูลเขื่อนเจ้าพระยา: {value}")
-            return value
-    except Exception as e:
-        print(f"❌ ERROR: fetch_chao_phraya_dam_discharge: {e}")
+        except Exception as e:
+            print(f"⚠️ ERROR: fetch_chao_phraya_dam_discharge (ครั้งที่ {attempt + 1}/{retries}): {e}")
+            time.sleep(3)
+            continue
     return None
 
 # --- วิเคราะห์และสร้างข้อความ ---
