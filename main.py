@@ -106,41 +106,28 @@ def get_inburi_data(url: str, timeout: int = 45):
         html = driver.page_source
         soup = BeautifulSoup(html, "html.parser")
         
+        # ค้นหาเฉพาะแถวที่ชื่อสถานี (ในแท็ก <th>) เป็น "อินทร์บุรี" ไม่ใช่แถวที่มีชื่ออำเภอใน
+        # คอลัมน์อื่น เพราะบางสถานีอื่นมีคำว่า "อินทร์บุรี" ในช่องที่ตั้ง เช่น "อ.อินทร์บุรี"
         all_rows = soup.find_all('tr')
         target_row = None
         for row in all_rows:
-            if 'อินทร์บุรี' in row.get_text(): target_row = row; break
-        
+            th = row.find('th')
+            if th and 'อินทร์บุรี' == th.get_text(strip=True):
+                target_row = row
+                break
         if target_row is None:
             print("⚠️ ไม่พบข้อมูลสถานี 'อินทร์บุรี' ในตาราง (หลังใช้ Selenium)"); return None, None
 
-        # Instead of blindly extracting all numbers from the row text (which can include
-        # unrelated values such as the delta from the previous measurement or the
-        # timestamp), parse the individual table cells. The water level and bank
-        # height appear in the 3rd and 4th <td> elements (0‑indexed) after the
-        # location/basin cells. This approach avoids accidentally picking up
-        # numbers like "0.01" (change since previous reading) or the time "09:00".
-        tds = target_row.find_all('td')
-        if len(tds) < 4:
-            print("⚠️ จำนวนคอลัมน์ไม่ครบสำหรับสถานี 'อินทร์บุรี'"); return None, None
-        # tds[0] = location (subdistrict/district), tds[1] = basin, tds[2] = water level,
-        # tds[3] = bank height. Extract and convert them to float.
-        try:
-            water_level = float(tds[2].get_text(strip=True).replace(',', ''))
-            bank_level = float(tds[3].get_text(strip=True).replace(',', ''))
-            print(f"✅ พบข้อมูลอินทร์บุรี: ระดับน้ำ={water_level}, ระดับตลิ่ง={bank_level}")
-            return water_level, bank_level
-        except Exception as parse_error:
-            # If parsing fails, fallback to the original regex method as a backup.
-            row_text = target_row.get_text(separator=' ', strip=True)
-            num_strs = re.findall(r'[-+]?\d*\.\d+|\d+', row_text)
-            values = [float(ns) for ns in num_strs]
-            if len(values) >= 2:
-                water_level, bank_level = values[0], values[1]
-                print(f"⚠️ ใช้วิธีสำรอง: ระดับน้ำ={water_level}, ระดับตลิ่ง={bank_level}")
-                return water_level, bank_level
-            print(f"⚠️ ERROR: ไม่สามารถแปลงค่าจาก <td> เป็นตัวเลขได้: {parse_error}")
-            return None, None
+        row_text = target_row.get_text(separator=' ', strip=True)
+        num_strs = re.findall(r'[-+]?\d*\.\d+|\d+', row_text)
+        values = [float(ns) for ns in num_strs]
+
+        if len(values) < 2:
+            print("⚠️ ไม่พบข้อมูลตัวเลขที่เพียงพอสำหรับสถานี 'อินทร์บุรี'"); return None, None
+        
+        water_level, bank_level = values[0], values[1]
+        print(f"✅ พบข้อมูลอินทร์บุรี: ระดับน้ำ={water_level}, ระดับตลิ่ง={bank_level}")
+        return water_level, bank_level
     except Exception as e:
         print(f"⚠️ ERROR: get_inburi_data (Selenium): {e}"); return None, None
     finally:
