@@ -26,7 +26,9 @@ except ImportError:
 
 
 # --- ค่าคงที่ ---
-SINGBURI_URL = "https://singburi.thaiwater.net/wl"
+# URL สำหรับติดตามระดับน้ำที่สถานีอินทร์บุรี บนเว็บไซต์ Thaiwater เวอร์ชันใหม่
+# เดิมกำหนดเป็น singburi.thaiwater.net/wl ซึ่งไม่อัปเดตแล้ว
+SINGBURI_URL = "https://www.thaiwater.net/water/wl"
 DISCHARGE_URL = 'https://tiwrm.hii.or.th/DATA/REPORT/php/chart/chaopraya/small/chaopraya.php'
 LINE_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_GROUP_ID = os.environ.get('LINE_GROUP_ID')
@@ -91,9 +93,19 @@ def get_historical_from_excel(year_be: int) -> int | None:
     except Exception as e:
         print(f"❌ ERROR: ไม่สามารถโหลดข้อมูลย้อนหลังจาก Excel ได้ ({file_path}): {e}"); return None
 
-# --- [แก้ไข] ดึงระดับน้ำอินทร์บุรีโดยใช้ Selenium (เพิ่มการดักจับ Timeout) ---
+# --- [แก้ไข] ดึงระดับน้ำสถานีอินทร์บุรีโดยใช้ Selenium ---
 def get_inburi_data(url: str, timeout: int = 45):
-    if not SELENIUM_AVAILABLE: return None, None
+    """
+    ดึงข้อมูลระดับน้ำและระดับตลิ่งของสถานีอินทร์บุรีจากหน้าเว็บ thaiwater
+
+    เนื่องจากหน้าเว็บใช้ React/Material UI จึงต้องใช้ Selenium โหลดหน้าและใช้ BeautifulSoup
+    วิเคราะห์ DOM ที่เรนเดอร์แล้ว เพื่อค้นหาแถวที่มีชื่อสถานี "สถานีอินทร์บุรี" ในคอลัมน์แรก
+
+    คืนค่าระดับน้ำและระดับตลิ่งเป็น tuple (water_level, bank_level)
+    หากไม่พบข้อมูลหรือเกิดข้อผิดพลาดจะคืน (None, None)
+    """
+    if not SELENIUM_AVAILABLE:
+        return None, None
     driver = setup_driver()
     try:
         try:
@@ -101,35 +113,74 @@ def get_inburi_data(url: str, timeout: int = 45):
         except TimeoutException:
             print("⚠️ ERROR: หน้าเว็บอินทร์บุรีโหลดไม่เสร็จในเวลาที่กำหนด (Page Load Timeout)")
             return None, None
-            
-        WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.XPATH, "//*[contains(text(), 'อินทร์บุรี')]")))
+        # รอให้มีข้อความ "อินทร์บุรี" ปรากฏในหน้า (อาจอยู่ใน span/button)
+        try:
+            WebDriverWait(driver, timeout).until(
+                EC.presence_of_element_located((By.XPATH, "//*[contains(text(), 'อินทร์บุรี')]"))
+            )
+        except TimeoutException:
+            print("⚠️ Timeout: ไม่พบคำว่า 'อินทร์บุรี' บนหน้าเว็บหลังจากรอ")
+            return None, None
+
         html = driver.page_source
         soup = BeautifulSoup(html, "html.parser")
-        
-        # ค้นหาเฉพาะแถวที่ชื่อสถานี (ในแท็ก <th>) เป็น "อินทร์บุรี" ไม่ใช่แถวที่มีชื่ออำเภอใน
-        # คอลัมน์อื่น เพราะบางสถานีอื่นมีคำว่า "อินทร์บุรี" ในช่องที่ตั้ง เช่น "อ.อินทร์บุรี"
-        all_rows = soup.find_all('tr')
+
+        # ค้นหาแถวที่มีชื่อสถานี "สถานีอินทร์บุรี" ในคอลัมน์แรก (ภายใน <th> หรือ <button>/<span>)
         target_row = None
-        for row in all_rows:
+        for row in soup.find_all('tr'):
             th = row.find('th')
-            if th and 'อินทร์บุรี' == th.get_text(strip=True):
+            if not th:
+                continue
+            text = th.get_text(strip=True)
+            # บางครั้ง <th> มีตัวอักษร "สถานีอินทร์บุรี" หรือ "อินทร์บุรี"; ตรวจสอบทั้งสอง
+            if 'สถานีอินทร์บุรี' in text or text == 'อินทร์บุรี':
                 target_row = row
                 break
         if target_row is None:
-            print("⚠️ ไม่พบข้อมูลสถานี 'อินทร์บุรี' ในตาราง (หลังใช้ Selenium)"); return None, None
-
-        row_text = target_row.get_text(separator=' ', strip=True)
-        num_strs = re.findall(r'[-+]?\d*\.\d+|\d+', row_text)
-        values = [float(ns) for ns in num_strs]
-
-        if len(values) < 2:
-            print("⚠️ ไม่พบข้อมูลตัวเลขที่เพียงพอสำหรับสถานี 'อินทร์บุรี'"); return None, None
+            # หากยังไม่เจอ ให้ลองค้นหาปุ่มที่มี label ว่า "สถานีอินทร์บุรี"
+            for row in soup.find_all('tr'):
+                button = row.find('button')
+                if button and 'สถานีอินทร์บุรี' in button.get_text(strip=True):
+                    target_row = row
+                    break
+        if target_row is None:
+            print("⚠️ ไม่พบข้อมูลสถานี 'สถานีอินทร์บุรี' ในตาราง (หลังใช้ Selenium)")
+            return None, None
         
-        water_level, bank_level = values[0], values[1]
-        print(f"✅ พบข้อมูลอินทร์บุรี: ระดับน้ำ={water_level}, ระดับตลิ่ง={bank_level}")
+        # ดึงข้อมูลจากคอลัมน์แต่ละช่อง หากมี <td> 4 ช่องขึ้นไป
+        water_level = None
+        bank_level = None
+        tds = target_row.find_all('td')
+        # คาดว่าดัชนีที่ 2 ของ <td> (0-based) คือระดับน้ำ และดัชนีที่ 3 คือระดับตลิ่ง
+        if len(tds) >= 4:
+            try:
+                wl_text = tds[2].get_text(strip=True)
+                bl_text = tds[3].get_text(strip=True)
+                water_level = float(wl_text.replace(',', '')) if wl_text not in [None, ''] else None
+                bank_level = float(bl_text.replace(',', '')) if bl_text not in [None, ''] else None
+            except Exception as e:
+                print(f"⚠️ Parsing error: ไม่สามารถแปลงค่าในคอลัมน์เป็นตัวเลขได้: {e}")
+                water_level = None; bank_level = None
+        # หากไม่พบตารางแบบเป็นระเบียบ ให้ fallback ไปหาโดย regex เช่นเดิม
+        if water_level is None or bank_level is None:
+            row_text = target_row.get_text(separator=' ', strip=True)
+            num_strs = re.findall(r'[-+]?\d*\.\d+|\d+', row_text)
+            values = []
+            for ns in num_strs:
+                try:
+                    values.append(float(ns))
+                except Exception:
+                    continue
+            if len(values) >= 2:
+                water_level, bank_level = values[0], values[1]
+        if water_level is None or bank_level is None:
+            print("⚠️ ไม่พบข้อมูลตัวเลขที่เพียงพอสำหรับสถานี 'อินทร์บุรี' (ต้องมีอย่างน้อย 2 ค่า)")
+            return None, None
+        print(f"✅ พบข้อมูลสถานีอินทร์บุรี: ระดับน้ำ={water_level}, ระดับตลิ่ง={bank_level}")
         return water_level, bank_level
     except Exception as e:
-        print(f"⚠️ ERROR: get_inburi_data (Selenium): {e}"); return None, None
+        print(f"⚠️ ERROR: get_inburi_data (Selenium): {e}")
+        return None, None
     finally:
         driver.quit()
 
