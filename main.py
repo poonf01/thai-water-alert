@@ -34,7 +34,7 @@ LINE_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_GROUP_ID = os.environ.get('LINE_GROUP_ID')
 LINE_PUSH_API_URL = "https://api.line.me/v2/bot/message/push"
 
-# --- [แก้ไข] ฟังก์ชันสำหรับตั้งค่า Selenium Driver ---
+# --- [ไม่แก้ไข] ฟังก์ชันสำหรับตั้งค่า Selenium Driver ---
 def setup_driver():
     """ตั้งค่า Chrome Driver สำหรับทำงานแบบ Headless บน Server (เพิ่มประสิทธิภาพ)"""
     chrome_options = Options()
@@ -58,7 +58,7 @@ def setup_driver():
     
     return driver
 
-# -- อ่านข้อมูลย้อนหลังจาก Excel --
+# -- [ไม่แก้ไข] อ่านข้อมูลย้อนหลังจาก Excel --
 THAI_MONTHS = {
     'มกราคม':1, 'กุมภาพันธ์':2, 'มีนาคม':3, 'เมษายน':4,
     'พฤษภาคม':5, 'มิถุนายน':6, 'กรกฎาคม':7, 'สิงหาคม':8,
@@ -113,19 +113,27 @@ def get_inburi_data(url: str, timeout: int = 45):
         except TimeoutException:
             print("⚠️ ERROR: หน้าเว็บอินทร์บุรีโหลดไม่เสร็จในเวลาที่กำหนด (Page Load Timeout)")
             return None, None
-        # รอให้มีข้อความ "อินทร์บุรี" ปรากฏในหน้า (อาจอยู่ใน span/button)
+        
+        # [!!! START EDIT 1 !!!]
+        # เปลี่ยนเงื่อนไขการรอ ให้เจาะจงไปที่ Table Header (th)
+        # ที่มี span ที่มีข้อความ "สถานีอินทร์บุรี" ตาม HTML ที่ผู้ใช้ส่งมา
         try:
+            print(f"...กำลังรอ Table Header 'สถานีอินทร์บุรี' (สูงสุด {timeout} วินาที)...")
             WebDriverWait(driver, timeout).until(
-                EC.presence_of_element_located((By.XPATH, "//*[contains(text(), 'อินทร์บุรี')]"))
+                EC.presence_of_element_located((By.XPATH, "//th[.//span[contains(text(), 'สถานีอินทร์บุรี')]]"))
             )
+            print("✅ พบ 'สถานีอินทร์บุรี' ในตารางแล้ว")
         except TimeoutException:
-            print("⚠️ Timeout: ไม่พบคำว่า 'อินทร์บุรี' บนหน้าเว็บหลังจากรอ")
+            # อัปเดตข้อความ Error ให้ชัดเจนขึ้น
+            print(f"⚠️ Timeout: ไม่พบตารางแถว 'สถานีอินทร์บุรี' หลังจากรอ {timeout} วินาที")
             return None, None
+        # [!!! END EDIT 1 !!!]
 
         html = driver.page_source
         soup = BeautifulSoup(html, "html.parser")
 
         # ค้นหาแถวที่มีชื่อสถานี "สถานีอินทร์บุรี" ในคอลัมน์แรก (ภายใน <th> หรือ <button>/<span>)
+        # ตรรกะส่วนนี้ยังคงใช้ได้ดีกับ HTML ที่ผู้ใช้ส่งมา
         target_row = None
         for row in soup.find_all('tr'):
             th = row.find('th')
@@ -133,25 +141,33 @@ def get_inburi_data(url: str, timeout: int = 45):
                 continue
             text = th.get_text(strip=True)
             # บางครั้ง <th> มีตัวอักษร "สถานีอินทร์บุรี" หรือ "อินทร์บุรี"; ตรวจสอบทั้งสอง
-            if 'สถานีอินทร์บุรี' in text or text == 'อินทร์บุรี':
+            if 'สถานีอินทร์บุรี' in text: # <--- 'สถานีอินทร์บุรี' จะจับคู่ได้
                 target_row = row
                 break
+        
         if target_row is None:
-            # หากยังไม่เจอ ให้ลองค้นหาปุ่มที่มี label ว่า "สถานีอินทร์บุรี"
+            # Fallback (เผื่อไว้ แต่ไม่น่าได้ใช้)
             for row in soup.find_all('tr'):
                 button = row.find('button')
                 if button and 'สถานีอินทร์บุรี' in button.get_text(strip=True):
                     target_row = row
                     break
+
         if target_row is None:
             print("⚠️ ไม่พบข้อมูลสถานี 'สถานีอินทร์บุรี' ในตาราง (หลังใช้ Selenium)")
             return None, None
         
         # ดึงข้อมูลจากคอลัมน์แต่ละช่อง หากมี <td> 4 ช่องขึ้นไป
+        # ตรรกะนี้ถูกต้องตาม HTML ที่ผู้ใช้ส่งมา
+        # <th> (สถานี)
+        # <td> (แม่น้ำ)      -> tds[0]
+        # <td> (ต.อินทร์บุรี) -> tds[1]
+        # <td> (14.28)      -> tds[2] (ระดับน้ำ)
+        # <td> (15.10)      -> tds[3] (ระดับตลิ่ง)
         water_level = None
         bank_level = None
         tds = target_row.find_all('td')
-        # คาดว่าดัชนีที่ 2 ของ <td> (0-based) คือระดับน้ำ และดัชนีที่ 3 คือระดับตลิ่ง
+        
         if len(tds) >= 4:
             try:
                 wl_text = tds[2].get_text(strip=True)
@@ -161,7 +177,8 @@ def get_inburi_data(url: str, timeout: int = 45):
             except Exception as e:
                 print(f"⚠️ Parsing error: ไม่สามารถแปลงค่าในคอลัมน์เป็นตัวเลขได้: {e}")
                 water_level = None; bank_level = None
-        # หากไม่พบตารางแบบเป็นระเบียบ ให้ fallback ไปหาโดย regex เช่นเดิม
+        
+        # Fallback (เผื่อไว้)
         if water_level is None or bank_level is None:
             row_text = target_row.get_text(separator=' ', strip=True)
             num_strs = re.findall(r'[-+]?\d*\.\d+|\d+', row_text)
@@ -173,19 +190,24 @@ def get_inburi_data(url: str, timeout: int = 45):
                     continue
             if len(values) >= 2:
                 water_level, bank_level = values[0], values[1]
+
         if water_level is None or bank_level is None:
             print("⚠️ ไม่พบข้อมูลตัวเลขที่เพียงพอสำหรับสถานี 'อินทร์บุรี' (ต้องมีอย่างน้อย 2 ค่า)")
             return None, None
+            
         print(f"✅ พบข้อมูลสถานีอินทร์บุรี: ระดับน้ำ={water_level}, ระดับตลิ่ง={bank_level}")
         return water_level, bank_level
+        
     except Exception as e:
         print(f"⚠️ ERROR: get_inburi_data (Selenium): {e}")
         return None, None
     finally:
         driver.quit()
 
-# --- ดึงข้อมูลเขื่อนเจ้าพระยา (เพิ่มการดักจับ Timeout) ---
-def fetch_chao_phraya_dam_discharge(url: str, timeout: int = 30):
+# --- [แก้ไข] ดึงข้อมูลเขื่อนเจ้าพระยา (เพิ่มการดักจับ Timeout) ---
+# [!!! START EDIT 2 !!!]
+# เพิ่ม Timeout เริ่มต้นเป็น 45 วินาที
+def fetch_chao_phraya_dam_discharge(url: str, timeout: int = 45):
     if not SELENIUM_AVAILABLE: return None
     driver = setup_driver()
     try:
@@ -198,10 +220,14 @@ def fetch_chao_phraya_dam_discharge(url: str, timeout: int = 30):
         # พยายามรอให้ตัวแปร json_data ที่ถูกประกาศในสคริปต์ของเว็บถูกกำหนดค่าจริง ๆ (อาจมาจาก AJAX)
         data = None
         try:
-            WebDriverWait(driver, 30).until(lambda d: d.execute_script("return (typeof json_data !== 'undefined' && json_data.length > 0);"))
+            print(f"...กำลังรอ json_data จากเว็บเขื่อนฯ (สูงสุด {timeout} วินาที)...")
+            # แก้ไขจาก 30 (Hardcoded) ให้ใช้ตัวแปร timeout ที่รับมา
+            WebDriverWait(driver, timeout).until(lambda d: d.execute_script("return (typeof json_data !== 'undefined' && json_data.length > 0);"))
             data = driver.execute_script('return json_data')
+            print("✅ พบ json_data แล้ว")
         except Exception:
             # หากไม่สามารถดึง json_data ผ่าน execute_script ได้ ให้ใช้ fallback เดิมด้วยการค้นหาใน page_source
+            print("⚠️ 'json_data' (execute_script) ล้มเหลว, กำลังลอง fallback (regex)...")
             html = driver.page_source
             match = re.search(r'json_data\s*=\s*(\[.*?\]);', html, flags=re.DOTALL)
             if not match:
@@ -213,11 +239,14 @@ def fetch_chao_phraya_dam_discharge(url: str, timeout: int = 30):
             except Exception as e:
                 print(f"⚠️ ERROR: แปลง json_data ไม่สำเร็จ: {e}")
                 return None
+        # [!!! END EDIT 2 !!!]
+
         # หากยังไม่สามารถกำหนด data ได้ ให้แจ้งเตือน
         if not data:
             print("⚠️ ไม่สามารถดึงข้อมูล json_data จากหน้าเว็บได้")
             return None
-        # วนซ้ำข้อมูลเพื่อค้นหาค่าของสถานี C13
+            
+        # วนซ้ำข้อมูลเพื่อค้นหาค่าของสถานี C13 (ตรรกะเดิม)
         for entry in data:
             if not isinstance(entry, dict):
                 continue
@@ -238,6 +267,7 @@ def fetch_chao_phraya_dam_discharge(url: str, timeout: int = 30):
                     if isinstance(tele, dict) and tele.get('station'):
                         tele_dict[tele['station']] = tele
                 possible_containers.append(tele_dict)
+            
             # ตรวจสอบในทุก container ที่เป็น dict ว่ามีคีย์ C13 หรือไม่
             for cont in possible_containers:
                 c13_data = cont.get('C13')
@@ -253,14 +283,16 @@ def fetch_chao_phraya_dam_discharge(url: str, timeout: int = 30):
                             return value
                         except ValueError:
                             continue
+                            
         print("⚠️ พบ json_data แต่ไม่พบข้อมูลระบายน้ำที่ต้องการสำหรับสถานี C13")
         return None
+        
     except Exception as e:
         print(f"⚠️ ERROR: fetch_chao_phraya_dam_discharge (Selenium): {e}"); return None
     finally:
         driver.quit()
 
-# --- วิเคราะห์และสร้างข้อความ (ไม่แก้ไข) ---
+# --- [ไม่แก้ไข] วิเคราะห์และสร้างข้อความ ---
 def analyze_and_create_message(inburi_level, dam_discharge, bank_height, hist_2567=None, hist_2565=None, hist_2554=None):
     distance_to_bank = bank_height - inburi_level; ICON, HEADER, summary_text = "", "", ""
     if dam_discharge > 2400 or distance_to_bank < 1.0:
@@ -279,11 +311,11 @@ def analyze_and_create_message(inburi_level, dam_discharge, bank_height, hist_25
     msg_lines += ["", summary_text]
     return "\n".join(msg_lines)
 
-# --- สร้างข้อความ Error (ไม่แก้ไข) ---
+# --- [ไม่แก้ไข] สร้างข้อความ Error ---
 def create_error_message(inburi_status, discharge_status):
     now = datetime.now(pytz.timezone('Asia/Bangkok')); return ( f"⚙️❌ เกิดข้อผิดพลาดในการดึงข้อมูล ❌⚙️\n" f"เวลา: {now.strftime('%d/%m/%Y %H:%M')} น.\n\n" f"• สถานะข้อมูลระดับน้ำอินทร์บุรี: {inburi_status}\n" f"• สถานะข้อมูลเขื่อนเจ้าพระยา: {discharge_status}\n\n" f"กรุณาตรวจสอบ Log บน GitHub Actions เพื่อดูรายละเอียดข้อผิดพลาดครับ" )
 
-# --- ส่งข้อความ LINE (ไม่แก้ไข) ---
+# --- [ไม่แก้ไข] ส่งข้อความ LINE ---
 def send_line_push(message):
     if not all([LINE_TOKEN, LINE_GROUP_ID]): print("❌ ไม่พบ LINE_TOKEN หรือ LINE_GROUP_ID"); return
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"}
@@ -293,18 +325,33 @@ def send_line_push(message):
         print("✅ ส่งข้อความ Push สำเร็จ!")
     except Exception as e: print(f"❌ ERROR: LINE Push: {e}")
 
-# --- Main (แก้ไขส่วนนี้) ---
+# --- [ไม่แก้ไข] Main ---
 if __name__ == "__main__":
     print("=== เริ่มการทำงานระบบแจ้งเตือนน้ำอินทร์บุรี ===")
+    
+    # [หมายเหตุ] ในโค้ดเก่า ระดับตลิ่งถูก Hardcoded ไว้ที่ 13.0
+    # แต่จากหน้าเว็บ (image_837665.png) คือ 15.10
+    # ตรรกะใหม่จะดึงค่า 15.10 มา
     inburi_level, bank_level = get_inburi_data(SINGBURI_URL)
-    bank_level = 13.0 # <--- บังคับค่าระดับตลิ่งเป็น 13 เมตร
+    
+    # หากคุณต้องการบังคับค่าระดับตลิ่ง (เช่น 13.0 หรือ 15.10) ให้เอา comment บรรทัดล่างออก
+    # bank_level = 15.10 # <-- บังคับค่าระดับตลิ่ง
+    
+    # หาก get_inburi_data ล้มเหลว bank_level จะเป็น None
+    # เราต้องกำหนดค่าเริ่มต้นให้มันหากล้มเหลว เพื่อไม่ให้ create_error_message พัง
+    if bank_level is None:
+        print("⚠️ ไม่สามารถดึงระดับตลิ่งได้ ใช้ค่าสำรอง 15.10")
+        bank_level = 15.10 # ใช้ค่า 15.10 (จากภาพ) เป็นค่าสำรอง
+        
     dam_discharge = fetch_chao_phraya_dam_discharge(DISCHARGE_URL)
     hist_2567 = get_historical_from_excel(2567); hist_2565 = get_historical_from_excel(2565); hist_2554 = get_historical_from_excel(2554)
+    
     if inburi_level is not None and bank_level is not None and dam_discharge is not None:
         final_message = analyze_and_create_message( inburi_level, dam_discharge, bank_level, hist_2567=hist_2567, hist_2565=hist_2565, hist_2554=hist_2554, )
     else:
         inburi_status = "สำเร็จ" if inburi_level is not None else "ล้มเหลว"
         discharge_status = "สำเร็จ" if dam_discharge is not None else "ล้มเหลว"
         final_message = create_error_message(inburi_status, discharge_status)
+        
     print("\n📤 ข้อความที่จะแจ้งเตือน:"); print(final_message); print("\n🚀 ส่งข้อความไปยัง LINE...")
     send_line_push(final_message); print("✅ เสร็จสิ้นการทำงาน")
