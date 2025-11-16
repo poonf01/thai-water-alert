@@ -144,42 +144,64 @@ def fetch_chao_phraya_dam_discharge(url: str, timeout: int = 30):
             print("⚠️ ERROR: หน้าเว็บเขื่อนเจ้าพระยาโหลดไม่เสร็จในเวลาที่กำหนด (Page Load Timeout)")
             return None
 
-        WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.XPATH, "//script[contains(text(), 'json_data')]")))
-        html = driver.page_source
-        match = re.search(r'json_data\s*=\s*(\[.*?\]);', html, flags=re.DOTALL)
-        # หากไม่พบตัวแปร json_data ใน html อาจเป็นเพราะหน้าเว็บโหลดข้อมูลผ่าน AJAX
-        if not match:
-            print("⚠️ ไม่พบตัวแปร 'json_data' ในหน้าเว็บ (หลังใช้ Selenium)")
-            return None
-        json_string = match.group(1)
+        # พยายามรอให้ตัวแปร json_data ที่ถูกประกาศในสคริปต์ของเว็บถูกกำหนดค่าจริง ๆ (อาจมาจาก AJAX)
+        data = None
         try:
-            data = json.loads(json_string)
-        except Exception as e:
-            # ป้องกันกรณี json ไม่ถูกต้อง
-            print(f"⚠️ ERROR: แปลง json_data ไม่สำเร็จ: {e}")
+            WebDriverWait(driver, 30).until(lambda d: d.execute_script("return (typeof json_data !== 'undefined' && json_data.length > 0);"))
+            data = driver.execute_script('return json_data')
+        except Exception:
+            # หากไม่สามารถดึง json_data ผ่าน execute_script ได้ ให้ใช้ fallback เดิมด้วยการค้นหาใน page_source
+            html = driver.page_source
+            match = re.search(r'json_data\s*=\s*(\[.*?\]);', html, flags=re.DOTALL)
+            if not match:
+                print("⚠️ ไม่พบตัวแปร 'json_data' ในหน้าเว็บ (หลังใช้ Selenium)")
+                return None
+            json_string = match.group(1)
+            try:
+                data = json.loads(json_string)
+            except Exception as e:
+                print(f"⚠️ ERROR: แปลง json_data ไม่สำเร็จ: {e}")
+                return None
+        # หากยังไม่สามารถกำหนด data ได้ ให้แจ้งเตือน
+        if not data:
+            print("⚠️ ไม่สามารถดึงข้อมูล json_data จากหน้าเว็บได้")
             return None
-        # พยายามค้นหาข้อมูลระบายน้ำของสถานี C13 โดยลองหลายชื่อฟิลด์ เช่น storage, flow, quantity, discharge
+        # วนซ้ำข้อมูลเพื่อค้นหาค่าของสถานี C13
         for entry in data:
             if not isinstance(entry, dict):
                 continue
-            itc = entry.get('itc_water')
-            if not isinstance(itc, dict):
-                continue
-            c13_data = itc.get('C13')
-            if not isinstance(c13_data, dict):
-                continue
-            for key in ['storage', 'flow', 'quantity', 'discharge']:
-                val = c13_data.get(key)
-                if val:
-                    try:
-                        # แปลงค่าที่พบเป็นตัวเลข float โดยตัด comma
-                        value = float(str(val).replace(',', ''))
-                        print(f"✅ พบข้อมูลเขื่อนเจ้าพระยา ({key}): {value}")
-                        return value
-                    except ValueError:
-                        # ข้ามหากไม่สามารถแปลงค่า
-                        continue
-        # หากยังไม่พบข้อมูลสำหรับ C13 เลย
+            # พิจารณาว่าข้อมูลสถานีอาจอยู่ในหลายกลุ่ม เช่น 'itc_water', 'dam', 'tele'
+            possible_containers = []
+            if isinstance(entry.get('itc_water'), dict):
+                possible_containers.append(entry['itc_water'])
+            if isinstance(entry.get('dam'), list):
+                # แปลง list ของ dam เป็น dict โดยใช้ station id เป็น key หากมี
+                dam_dict = {}
+                for dam in entry['dam']:
+                    if isinstance(dam, dict) and dam.get('station'):
+                        dam_dict[dam['station']] = dam
+                possible_containers.append(dam_dict)
+            if isinstance(entry.get('tele'), list):
+                tele_dict = {}
+                for tele in entry['tele']:
+                    if isinstance(tele, dict) and tele.get('station'):
+                        tele_dict[tele['station']] = tele
+                possible_containers.append(tele_dict)
+            # ตรวจสอบในทุก container ที่เป็น dict ว่ามีคีย์ C13 หรือไม่
+            for cont in possible_containers:
+                c13_data = cont.get('C13')
+                if not isinstance(c13_data, dict):
+                    continue
+                # ลองหา value จากหลายชื่อฟิลด์
+                for key in ['storage', 'flow', 'quantity', 'discharge', 'value']:
+                    val = c13_data.get(key)
+                    if val:
+                        try:
+                            value = float(str(val).replace(',', ''))
+                            print(f"✅ พบข้อมูลเขื่อนเจ้าพระยา ({key}): {value}")
+                            return value
+                        except ValueError:
+                            continue
         print("⚠️ พบ json_data แต่ไม่พบข้อมูลระบายน้ำที่ต้องการสำหรับสถานี C13")
         return None
     except Exception as e:
