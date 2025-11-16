@@ -151,11 +151,16 @@ def fetch_chao_phraya_dam_discharge(url: str, timeout: int = 30):
         json_string = match.group(1); data = json.loads(json_string)
         for entry in data:
             if isinstance(entry, dict) and 'itc_water' in entry and 'C13' in entry['itc_water']:
-                storage_val = entry['itc_water']['C13'].get('storage')
-                if storage_val:
-                    value = float(str(storage_val).replace(',', ''))
+                
+                # --- [แก้ไข] ---
+                # เปลี่ยนจาก 'storage' (ที่กลายเป็น None) ไปเป็น 'discharge'
+                # -----------------
+                discharge_val = entry['itc_water']['C13'].get('discharge') 
+                
+                if discharge_val:
+                    value = float(str(discharge_val).replace(',', ''))
                     print(f"✅ พบข้อมูลเขื่อนเจ้าพระยา: {value}"); return value
-        print("⚠️ พบ json_data แต่ไม่พบข้อมูล 'C13.storage'"); return None
+        print("⚠️ พบ json_data แต่ไม่พบข้อมูล 'C13.discharge'"); return None # อัปเดต Error log
     except Exception as e:
         print(f"⚠️ ERROR: fetch_chao_phraya_dam_discharge (Selenium): {e}"); return None
     finally:
@@ -194,11 +199,11 @@ def send_line_push(message):
         print("✅ ส่งข้อความ Push สำเร็จ!")
     except Exception as e: print(f"❌ ERROR: LINE Push: {e}")
 
-# --- Main (แก้ไขส่วนนี้) ---
+# --- Main (คงค่า bank_level = 13.0 ตามที่ผู้ใช้ต้องการ) ---
 if __name__ == "__main__":
     print("=== เริ่มการทำงานระบบแจ้งเตือนน้ำอินทร์บุรี ===")
-    inburi_level, bank_level = get_inburi_data(SINGBURI_URL)
-    bank_level = 13.0 # <--- บังคับค่าระดับตลิ่งเป็น 13 เมตร
+    inburi_level, _ = get_inburi_data(SINGBURI_URL) # ไม่ใช้ bank_level ที่ดึงมา
+    bank_level = 13.0 # <--- บังคับค่าระดับตลิ่งเป็น 13 เมตร (ตามที่ผู้ใช้ต้องการ)
     dam_discharge = fetch_chao_phraya_dam_discharge(DISCHARGE_URL)
     hist_2567 = get_historical_from_excel(2567); hist_2565 = get_historical_from_excel(2565); hist_2554 = get_historical_from_excel(2554)
     if inburi_level is not None and bank_level is not None and dam_discharge is not None:
