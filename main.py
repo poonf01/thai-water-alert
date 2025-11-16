@@ -160,12 +160,23 @@ def get_tmd_radar_nowcast(
 
 # --- ค่าคงที่ ---
 SINGBURI_URL = "https://singburi.thaiwater.net/wl"
-# DISCHARGE_URL is no longer used because discharge data is now
-# retrieved via the Thaiwater API.  It remains here as a legacy
-# constant for backward compatibility but is unused.
 DISCHARGE_URL = 'https://tiwrm.hii.or.th/DATA/REPORT/php/chart/chaopraya/small/chaopraya.php'
 LINE_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_API_URL = "https://api.line.me/v2/bot/message/broadcast"
+
+# --- สถานี / พื้นที่ที่ต้องการตรวจสอบ (ปรับให้เหมาะสมได้ผ่าน Environment Variables) ---
+# ผู้ใช้สามารถตั้งค่าพารามิเตอร์เหล่านี้ผ่านตัวแปรสภาพแวดล้อม เช่น
+# STATION_PROVINCE_CODE, STATION_TUMBON, STATION_DISTRICT, STATION_PROVINCE,
+# STATION_NAME, MUNICIPALITY_NAME, DAM_PROVINCE_CODE และ DAM_STATION_OLDCODE
+# หากไม่ได้ตั้งค่า จะใช้ค่าเริ่มต้นสำหรับ "อินทร์บุรี" จ.สิงห์บุรี และเขื่อนเจ้าพระยา (C.13)
+STATION_PROVINCE_CODE = os.environ.get('STATION_PROVINCE_CODE', '17')
+STATION_TUMBON = os.environ.get('STATION_TUMBON', 'อินทร์บุรี')
+STATION_DISTRICT = os.environ.get('STATION_DISTRICT', 'อินทร์บุรี')
+STATION_PROVINCE = os.environ.get('STATION_PROVINCE', 'สิงห์บุรี')
+STATION_NAME = os.environ.get('STATION_NAME', 'อินทร์บุรี')
+MUNICIPALITY_NAME = os.environ.get('MUNICIPALITY_NAME', 'เทศบาลตำบลอินทร์บุรี')
+DAM_PROVINCE_CODE = os.environ.get('DAM_PROVINCE_CODE', '18')
+DAM_STATION_OLDCODE = os.environ.get('DAM_STATION_OLDCODE', 'C.13')
 
 # -- อ่านข้อมูลย้อนหลังจาก Excel --
 THAI_MONTHS = {
@@ -302,53 +313,13 @@ def get_historical_from_csv(year_be: int, csv_path: str = "historical_comparison
         print(f"❌ ERROR: ไม่สามารถโหลดข้อมูลย้อนหลังจาก CSV ได้ ({csv_path}): {e}")
         return None
 
-def get_station_data(
-    province_code: str | None = None,
-    target_tumbon: str | None = None,
-    target_station_name: str | None = None,
+def get_sapphaya_data(
+    province_code: str = "17",
+    target_tumbon: str = "อินทร์บุรี",
+    target_station_name: str = "อินทร์บุรี",
     timeout: int = 15,
     retries: int = 3,
-) -> tuple[float | None, float | None, str | None]:
-    """
-    Fetch the latest water level and bank height for a specific tele‑station
-    from the Thaiwater API.  This function generalises the previous
-    `get_sapphaya_data` by allowing the caller to specify the province
-    code and station identifiers via environment variables.  If these
-    variables are not provided, sensible defaults corresponding to
-    สถานีสรรพยา (โพนางดำออก) will be used.  The function returns the
-    water level (MSL), bank height and a human‑readable location string.
-
-    Environment variables used (optional):
-      • STATION_PROVINCE_CODE – Two‑digit code of the target province
-      • STATION_TUMBON       – Name of the target sub‑district (ต. ...)
-      • STATION_NAME         – Name of the tele‑station
-      • BANK_HEIGHT          – Override value for bank height (float)
-
-    Parameters
-    ----------
-    province_code : str | None
-        Province code for the query.  If None, reads from the
-        STATION_PROVINCE_CODE environment variable, defaulting to "18".
-    target_tumbon : str | None
-        Target sub‑district name.  If None, reads from STATION_TUMBON,
-        defaulting to "โพนางดำออก".
-    target_station_name : str | None
-        Target tele‑station name.  If None, reads from STATION_NAME,
-        defaulting to "สรรพยา".
-    timeout : int
-        Request timeout.
-    retries : int
-        Number of retries on failure.
-
-    Returns
-    -------
-    tuple[float | None, float | None, str | None]
-        (water_level, bank_height, location_description) or (None, None, None)
-    """
-    # Resolve parameters from environment if not explicitly provided
-    province_code = province_code or os.environ.get("STATION_PROVINCE_CODE", "18")
-    target_tumbon = target_tumbon or os.environ.get("STATION_TUMBON", "โพนางดำออก")
-    target_station_name = target_station_name or os.environ.get("STATION_NAME", "สรรพยา")
+):
     api_url_template = (
         "https://api-v3.thaiwater.net/api/v1/thaiwater30/public/waterlevel?province_code={code}"
     )
@@ -368,143 +339,171 @@ def get_station_data(
             for item in data:
                 geocode = item.get("geocode", {})
                 tumbon_name = geocode.get("tumbon_name", {}).get("th", "")
-                amphoe_name = geocode.get("amphoe_name", {}).get("th", "")
-                province_name = geocode.get("province_name", {}).get("th", "")
                 station_info = item.get("station", {})
                 station_name = station_info.get("tele_station_name", {}).get("th", "")
                 if tumbon_name == target_tumbon and station_name == target_station_name:
                     wl_str = item.get("waterlevel_msl")
-                    water_level: float | None = None
+                    water_level = None
                     if wl_str is not None:
                         try:
                             water_level = float(wl_str)
-                        except Exception:
+                        except ValueError:
                             water_level = None
-                    # Determine bank height.  If an override is specified
-                    # via BANK_HEIGHT, use it; otherwise use the maximum
-                    # of left_bank and right_bank from the API.  If those
-                    # fields are missing or invalid, fall back to 13.87.
-                    bank_override = os.environ.get("BANK_HEIGHT")
-                    bank_level: float | None = None
-                    if bank_override:
+                    # Bank height (ตลิ่ง) may be overridden via environment variable "BANK_HEIGHT".
+                    # If set, use that value; otherwise fall back to 13 (fixed for อินทร์บุรี per user request).
+                    env_bank_height = os.environ.get("BANK_HEIGHT")
+                    default_bank = 13.0
+                    if env_bank_height:
                         try:
-                            bank_level = float(bank_override)
+                            bank_level = float(env_bank_height)
                         except Exception:
                             print(
-                                f"⚠️ ค่าความสูงตลิ่งใน environment ไม่ถูกต้อง ('{bank_override}'), จะลองใช้ค่าจาก API"
+                                f"⚠️ ค่าความสูงตลิ่งใน environment ไม่ถูกต้อง ('{env_bank_height}'), ใช้ค่าเริ่มต้น {default_bank}"
                             )
-                            bank_level = None
-                    if bank_level is None:
-                        try:
-                            left_bank = station_info.get("left_bank")
-                            right_bank = station_info.get("right_bank")
-                            banks = [b for b in [left_bank, right_bank] if b is not None]
-                            if banks:
-                                bank_level = max(float(b) for b in banks)
-                            else:
-                                bank_level = 13.87
-                        except Exception:
-                            bank_level = 13.87
-                    location_desc = f"ต.{tumbon_name} อ.{amphoe_name} จ.{province_name}"
+                            bank_level = default_bank
+                    else:
+                        bank_level = default_bank
                     print(
-                        f"✅ พบข้อมูลสถานี '{target_station_name}' ที่ {target_tumbon}: ระดับน้ำ={water_level}, ตลิ่ง={bank_level}"
+                        f"✅ พบข้อมูลสถานีอินทร์บุรี: ระดับน้ำ={water_level}, ระดับตลิ่ง={bank_level} (ใช้ค่า {default_bank})"
                     )
-                    return water_level, bank_level, location_desc
+                    return water_level, bank_level
             print(
                 f"⚠️ ไม่พบข้อมูลสถานี '{target_station_name}' ที่ {target_tumbon} ในการเรียก API ครั้งที่ {attempt + 1}"
             )
         except Exception as e:
-            print(f"❌ ERROR: get_station_data (ครั้งที่ {attempt + 1}): {e}")
+            print(f"❌ ERROR: get_sapphaya_data (ครั้งที่ {attempt + 1}): {e}")
         if attempt < retries - 1:
             time.sleep(3)
-    return None, None, None
+    return None, None
 
 def fetch_chao_phraya_dam_discharge(
+    url: str | None = None,
     province_code: str | None = None,
-    target_station_oldcode: str = "C.13",
-    timeout: int = 15,
+    station_oldcode: str = "C.13",
+    timeout: int = 30,
     retries: int = 3,
 ) -> float | None:
     """
-    Retrieve the latest discharge value for the Chao Phraya Dam (ท้ายเขื่อนเจ้าพระยา)
-    from the Thaiwater API.  The API provides water level and discharge
-    information keyed by tele‑station codes.  This function looks for
-    station code `C.13` within a given province and returns the discharge
-    value in cubic metres per second.
+    Attempt to fetch the discharge (ปริมาณน้ำปล่อย) of the Chao Phraya dam.
 
-    Environment variable override: if `DAM_PROVINCE_CODE` is set it will
-    be used as the province_code.  Otherwise, the default is "18" (Chai
-    Nat), where the Chao Phraya Dam is located.
+    This function first tries to retrieve the discharge data via the Thaiwater API,
+    using the provided province_code and station_oldcode.  If API-based retrieval
+    fails or if no matching station is found, it falls back to scraping the older
+    HTML/JS page specified by `url` (if provided).  A few retries are used to
+    mitigate transient network errors.
 
     Parameters
     ----------
+    url : str | None
+        The fallback URL to scrape if API retrieval fails.  If None, scraping is
+        skipped.
     province_code : str | None
-        Two‑digit province code to search within.  Defaults to
-        environment variable `DAM_PROVINCE_CODE` or "18".
-    target_station_oldcode : str
-        Tele‑station old code of the dam.  Default is "C.13".
+        The province code to query via the Thaiwater API (e.g., "18" for Chai Nat).
+    station_oldcode : str
+        The tele station old code (e.g., "C.13") to match in API data.
     timeout : int
-        Request timeout in seconds.
+        Timeout for HTTP requests in seconds.
     retries : int
-        Number of retries to perform on failure.
+        Number of retries for API requests.
 
     Returns
     -------
     float | None
-        Discharge in cubic metres per second, or None if not found.
+        The discharge value in cubic metres per second, or None if not found.
     """
-    province_code = province_code or os.environ.get("DAM_PROVINCE_CODE", "18")
-    api_url_template = (
-        "https://api-v3.thaiwater.net/api/v1/thaiwater30/public/waterlevel?province_code={code}"
-    )
-    for attempt in range(retries):
+    # First attempt to fetch via API if province_code is provided
+    if province_code:
+        api_url_template = (
+            "https://api-v3.thaiwater.net/api/v1/thaiwater30/public/waterlevel?province_code={code}"
+        )
+        for attempt in range(retries):
+            try:
+                url_api = api_url_template.format(code=province_code)
+                headers = {
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/91.0.4472.124 Safari/537.36"
+                    ),
+                }
+                resp = requests.get(url_api, headers=headers, timeout=timeout)
+                resp.raise_for_status()
+                data = resp.json().get("data", [])
+                for item in data:
+                    station = item.get("station", {})
+                    oldcode = station.get("tele_station_oldcode")
+                    if oldcode == station_oldcode:
+                        # Found the target station; extract discharge if available
+                        discharge_val = item.get("discharge")
+                        if discharge_val is not None:
+                            try:
+                                value = float(discharge_val)
+                                print(f"✅ พบข้อมูลเขื่อนเจ้าพระยา (API): {value}")
+                                return value
+                            except Exception:
+                                pass
+                print(
+                    f"⚠️ ไม่พบข้อมูล discharge สำหรับรหัสสถานี '{station_oldcode}' ในการเรียก API ครั้งที่ {attempt + 1}"
+                )
+            except Exception as e:
+                print(f"❌ ERROR: fetch_chao_phraya_dam_discharge (API) ครั้งที่ {attempt + 1}: {e}")
+            if attempt < retries - 1:
+                time.sleep(3)
+        # If API fails across all retries, fall through to scraping if URL provided
+        if not url:
+            return None
+    # Fallback to scraping old HTML/JS page if URL is provided
+    if url:
         try:
-            url = api_url_template.format(code=province_code)
             headers = {
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/91.0.4472.124 Safari/537.36"
-                ),
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                              'AppleWebKit/537.36 (KHTML, like Gecko) '
+                              'Chrome/91.0.4472.124 Safari/537.36',
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache'
             }
-            response = requests.get(url, headers=headers, timeout=timeout)
+            cache_buster_url = f"{url}?cb={random.randint(10000, 99999)}"
+            response = requests.get(cache_buster_url, headers=headers, timeout=10)
             response.raise_for_status()
-            data = response.json().get("data", [])
-            for item in data:
-                station_info = item.get("station", {})
-                oldcode = station_info.get("tele_station_oldcode")
-                if oldcode == target_station_oldcode:
-                    discharge = item.get("discharge")
-                    if discharge is not None:
-                        try:
-                            value = float(discharge)
-                        except Exception:
-                            value = float(str(discharge).replace(",", ""))
-                        print(f"✅ พบข้อมูลเขื่อนเจ้าพระยา: {value}")
-                        return value
-                    else:
-                        print("⚠️ ไม่พบข้อมูลการระบาย (discharge) ใน API สำหรับ C.13")
-                        return None
-            print(
-                f"⚠️ ไม่พบสถานีรหัส {target_station_oldcode} ในจังหวัดรหัส {province_code} ครั้งที่ {attempt + 1}"
-            )
+            response.encoding = 'utf-8'
+            match = re.search(r'var json_data = (\[.*\]);', response.text)
+            if not match:
+                print("❌ ERROR: ไม่พบข้อมูล JSON ในหน้าเว็บ")
+                return None
+            json_string = match.group(1)
+            data = json.loads(json_string)
+            # Old format uses 'C13' as key
+            water_storage = data[0]['itc_water'].get('C13', {}).get('storage')
+            if water_storage is not None:
+                try:
+                    value = float(water_storage) if isinstance(water_storage, (int, float)) else float(str(water_storage).replace(',', ''))
+                    print(f"✅ พบข้อมูลเขื่อนเจ้าพระยา (scrape): {value}")
+                    return value
+                except Exception:
+                    pass
         except Exception as e:
-            print(f"❌ ERROR: fetch_chao_phraya_dam_discharge (ครั้งที่ {attempt + 1}): {e}")
-        if attempt < retries - 1:
-            time.sleep(3)
+            print(f"❌ ERROR: fetch_chao_phraya_dam_discharge (scrape): {e}")
     return None
 
 def analyze_and_create_message(
     water_level: float,
     dam_discharge: float,
     bank_height: float,
-    location_desc: str,
     hist_2567: int | None = None,
     hist_2565: int | None = None,
     hist_2554: int | None = None,
     weather_summary: List[Tuple[str, str]] | None = None,
 ) -> str:
+    """
+    Compose a message summarising the current water level and dam discharge
+    situation for the configured station.  The severity of the alert is
+    determined by comparing the discharge against threshold values and the
+    distance between the water level and the river bank height.  The
+    message will include location details (พื้นที่, สถานี, ตำบล/อำเภอ/จังหวัด),
+    current measurements, historical comparisons, and guidance.
+    """
     distance_to_bank = bank_height - water_level
+    # Determine alert level
     if dam_discharge is not None and (dam_discharge > 2400 or distance_to_bank < 1.0):
         ICON = "🟥"
         HEADER = "‼️ ประกาศเตือนภัยระดับสูงสุด ‼️"
@@ -531,9 +530,13 @@ def analyze_and_create_message(
         ]
     now = datetime.now(pytz.timezone("Asia/Bangkok"))
     TIMESTAMP = now.strftime("%d/%m/%Y %H:%M")
+    # Construct the message lines
     msg_lines: List[str] = []
     msg_lines.append(f"{ICON} {HEADER}")
-    msg_lines.append(f"📍 {location_desc}")
+    # Add area/station/location lines using configured variables
+    msg_lines.append(f"📍 พื้นที่ {STATION_DISTRICT}")
+    msg_lines.append(f"📍 สถานี {STATION_NAME}")
+    msg_lines.append(f"📍 ต.{STATION_TUMBON} อ.{STATION_DISTRICT} จ.{STATION_PROVINCE}")
     msg_lines.append(f"🗓️ วันที่: {TIMESTAMP} น.")
     msg_lines.append("")
     msg_lines.append("🌊 ระดับน้ำ + ตลิ่ง")
@@ -562,30 +565,14 @@ def analyze_and_create_message(
 
 def create_error_message(station_status: str, discharge_status: str) -> str:
     """
-    Construct a generic error notification when either the station data
-    or the dam discharge cannot be retrieved.  The message uses the
-    current date/time and includes the target station name from
-    environment variables to improve clarity.
-
-    Parameters
-    ----------
-    station_status : str
-        "สำเร็จ" if the station data was retrieved, otherwise "ล้มเหลว".
-    discharge_status : str
-        "สำเร็จ" if the dam discharge was retrieved, otherwise "ล้มเหลว".
-
-    Returns
-    -------
-    str
-        A formatted error message.
+    Compose an error notification when data retrieval fails.  The station name
+    included in the message is derived from the configured STATION_NAME.
     """
     now = datetime.now(pytz.timezone('Asia/Bangkok'))
-    # Use the station name from the environment to indicate which station failed
-    station_name = os.environ.get('STATION_NAME', 'สรรพยา')
     return (
         f"⚙️❌ เกิดข้อผิดพลาดในการดึงข้อมูล ❌⚙️\n"
         f"เวลา: {now.strftime('%d/%m/%Y %H:%M')} น.\n\n"
-        f"• สถานะข้อมูลระดับน้ำ{station_name}: {station_status}\n"
+        f"• สถานะข้อมูลระดับน้ำ{STATION_NAME}: {station_status}\n"
         f"• สถานะข้อมูลเขื่อนเจ้าพระยา: {discharge_status}\n\n"
         f"กรุณาตรวจสอบ Log บน GitHub Actions เพื่อดูรายละเอียดข้อผิดพลาดครับ"
     )
@@ -610,13 +597,20 @@ if __name__ == "__main__":
     print("=== เริ่มการทำงานระบบแจ้งเตือนน้ำ (เวอร์ชันปรับปรุง) ===")
     
     # --- Fetch Core Data ---
-    # Pull the station information using the generalised API helper.  This
-    # returns the water level, bank height and a formatted location string.
-    water_level, bank_level, location_desc = get_station_data()
-    # Retrieve discharge for the Chao Phraya dam.  If an override province
-    # code is supplied via environment variable `DAM_PROVINCE_CODE` it
-    # will be used; otherwise the default (18) is applied.
-    dam_discharge = fetch_chao_phraya_dam_discharge()
+    # Read water level and bank height for the configured station.  Environment
+    # variables STATION_PROVINCE_CODE, STATION_TUMBON and STATION_NAME can
+    # override the defaults defined above.
+    water_level, bank_level = get_sapphaya_data(
+        province_code=STATION_PROVINCE_CODE,
+        target_tumbon=STATION_TUMBON,
+        target_station_name=STATION_NAME,
+    )
+    # Fetch the dam discharge using either the API (preferred) or fallback HTML.
+    dam_discharge = fetch_chao_phraya_dam_discharge(
+        url=DISCHARGE_URL,
+        province_code=DAM_PROVINCE_CODE,
+        station_oldcode=DAM_STATION_OLDCODE,
+    )
     hist_2567 = get_historical_from_excel(2567)
     hist_2554 = get_historical_from_excel(2554)
     # Read year 2565 data from the combined CSV if available
@@ -624,12 +618,11 @@ if __name__ == "__main__":
 
     # --- Build Core Message ---
     if water_level is not None and bank_level is not None and dam_discharge is not None:
-        # Pass historical values and the location description to the message creator
+        # Pass 2567, 2565, 2554 historical values to the message creator
         core_message = analyze_and_create_message(
             water_level,
             dam_discharge,
             bank_level,
-            location_desc,
             hist_2567,
             hist_2565,
             hist_2554,
@@ -640,9 +633,9 @@ if __name__ == "__main__":
         core_message = create_error_message(station_status, discharge_status)
 
     # --- Assemble Final Message for LINE ---
-    # Allow the municipality name to be overridden via environment variable.
-    municipality = os.environ.get("MUNICIPALITY_NAME", "เทศบาลตำบลโพนางดำออก")
-    final_message = f"{core_message}\n\n{municipality}"
+    # The weather forecast section is intentionally removed per user request.
+    # Include the configured municipality name at the end of the message.
+    final_message = f"{core_message}\n\n{MUNICIPALITY_NAME}"
 
     print("\n📤 ข้อความที่จะแจ้งเตือน:")
     print(final_message)
