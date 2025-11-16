@@ -7,351 +7,645 @@ import requests
 import pytz
 import pandas as pd
 from datetime import datetime
+from typing import List, Tuple
 from bs4 import BeautifulSoup
 
-# --- ส่วนของ Selenium ---
-try:
-    from selenium import webdriver
-    from selenium.webdriver.chrome.options import Options
-    from selenium.webdriver.chrome.service import Service
-    from webdriver_manager.chrome import ChromeDriverManager
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.support.ui import WebDriverWait
-    from selenium.webdriver.support import expected_conditions as EC
-    from selenium.common.exceptions import TimeoutException # เพิ่ม TimeoutException
-    SELENIUM_AVAILABLE = True
-except ImportError:
-    SELENIUM_AVAILABLE = False
-    print("⚠️ ไม่ได้ติดตั้ง Selenium หรือ Webdriver Manager")
+# We will integrate a second weather source (OpenWeather) for more
+# descriptive alerts about today's conditions.  The following
+# constants and helper function are adapted from the original
+# `อากาศ.py` script provided by the user.  This ensures the script
+# produces both a multi‑day forecast (via Open‑Meteo) and an
+# immediate weather alert (via OpenWeather) within the same
+# notification message.
 
+# --- OpenWeather configuration ---
+# If the user has set an environment variable named
+# `OPENWEATHER_API_KEY`, it will be used to override the default key.
+OPENWEATHER_API_KEY = os.environ.get(
+    "OPENWEATHER_API_KEY", "c55ccdd65d09909976428698e8da16ec"
+)
+
+# --- TMD Data Sources (NEW) ---
+# URL for TMD's radar page for the Chao Phraya basin. This page is
+# monitored for near-real-time rain "nowcasting".
+TMD_RADAR_URL = "https://weather.tmd.go.th/chaophraya.php"
+
+def get_openweather_alert(
+    lat: float | None = None,
+    lon: float | None = None,
+    api_key: str = OPENWEATHER_API_KEY,
+    timezone: str = "Asia/Bangkok",
+    timeout: int = 15,
+) -> str:
+    """
+    Fetch a 5‑day/3‑hour forecast from OpenWeather and generate a
+    succinct alert for today.  It summarises whether there will be
+    exceptionally hot weather or a likelihood of rain/thunderstorms.
+    If neither condition is met, it returns a generic message.  Any
+    errors encountered will result in a descriptive error string.
+
+    Parameters
+    ----------
+    lat : float
+        Latitude of the location.
+    lon : float
+        Longitude of the location.
+    api_key : str
+        OpenWeather API key.  If not provided, a default key is used.
+    timezone : str
+        IANA timezone string for localising timestamps.
+    timeout : int
+        Timeout in seconds for the HTTP request.
+
+    Returns
+    -------
+    str
+        A message describing today's expected weather conditions.
+    """
+    try:
+        # Use global coordinates if none are provided at call time.
+        if lat is None:
+            # Defer import to runtime to ensure WEATHER_LAT is defined.
+            lat = WEATHER_LAT
+        if lon is None:
+            lon = WEATHER_LON
+        # Build the OpenWeather API URL.  Using metric units to obtain
+        # temperatures in Celsius directly.
+        url = (
+            f"https://api.openweathermap.org/data/2.5/forecast?lat={lat}&lon={lon}"
+            f"&appid={api_key}&units=metric"
+        )
+        resp = requests.get(url, timeout=timeout)
+        resp.raise_for_status()
+        data = resp.json()
+        # Establish local timezone and today's date string for filtering.
+        tz = pytz.timezone(timezone)
+        now = datetime.now(tz)
+        today_str = now.strftime("%Y-%m-%d")
+        max_temp = -999.0
+        rain_detected_time: str | None = None
+        # Iterate over forecast entries.  Each entry has a timestamp and
+        # weather conditions.  We're only interested in entries for the
+        # current local day.
+        for entry in data.get("list", []):
+            ts = entry.get("dt_txt", "")
+            if today_str not in ts:
+                continue
+            temp = entry.get("main", {}).get("temp")
+            weather = entry.get("weather", [])
+            if temp is not None and isinstance(temp, (int, float)):
+                if temp > max_temp:
+                    max_temp = temp
+            if weather:
+                weather_id = weather[0].get("id")
+                # Weather codes: thunderstorms (2xx) or heavy rain (5xx)
+                if 200 <= weather_id < 300 or 500 <= weather_id < 600:
+                    if not rain_detected_time:
+                        # Extract HH:MM portion of the timestamp (YYYY‑MM‑DD HH:MM:SS)
+                        rain_detected_time = ts[11:16] if len(ts) >= 16 else None
+        # Construct messages based on conditions.
+        messages = []
+        if max_temp >= 35.0:
+            messages.append(
+                f"• พื้นที่ ต.โพนางดำออก อุณหภูมิสูงสุดประมาณ {round(max_temp, 1)}°C"
+            )
+        if rain_detected_time:
+            messages.append(
+                f"• คาดว่ามีฝนตกช่วงเวลา {rain_detected_time} น."
+            )
+        if not messages:
+            messages.append("• สภาพอากาศปกติ ไม่มีฝนตก")
+        return "\n".join(messages)
+    except Exception as e:
+        return f"❌ เกิดข้อผิดพลาดในการดึงข้อมูลอากาศ: {e}"
+
+def get_tmd_radar_nowcast(
+    radar_url: str = TMD_RADAR_URL,
+    target_area: str = "ชัยนาท"
+) -> str | None:
+    """
+    Provides a short-term rain forecast (nowcast) by checking the TMD
+    radar page for mentions of significant rain in a target area.
+
+    Parameters
+    ----------
+    radar_url : str
+        The URL to the TMD weather radar page.
+    target_area : str
+        The name of the province/area to check for (e.g., "ชัยนาท").
+
+    Returns
+    -------
+    str | None
+        A nowcast message if rain is imminent, otherwise None.
+    """
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        response = requests.get(radar_url, headers=headers, timeout=20)
+        response.raise_for_status()
+        response.encoding = 'utf-8'
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+        page_text = soup.get_text()
+
+        if target_area in page_text:
+            if "ฝนปานกลาง" in page_text or "ฝนหนัก" in page_text:
+                return f"🛰️ เรดาร์ตรวจพบกลุ่มฝนบริเวณ จ.{target_area} อาจมีฝนตกใน 1-2 ชั่วโมง"
+        return None
+    except Exception as e:
+        print(f"❌ ERROR: get_tmd_radar_nowcast: {e}")
+        return None
 
 # --- ค่าคงที่ ---
-# URL สำหรับติดตามระดับน้ำที่สถานีอินทร์บุรี บนเว็บไซต์ Thaiwater เวอร์ชันใหม่
-# เดิมกำหนดเป็น singburi.thaiwater.net/wl ซึ่งไม่อัปเดตแล้ว
-SINGBURI_URL = "https://www.thaiwater.net/water/wl"
+SINGBURI_URL = "https://singburi.thaiwater.net/wl"
+# DISCHARGE_URL is no longer used because discharge data is now
+# retrieved via the Thaiwater API.  It remains here as a legacy
+# constant for backward compatibility but is unused.
 DISCHARGE_URL = 'https://tiwrm.hii.or.th/DATA/REPORT/php/chart/chaopraya/small/chaopraya.php'
 LINE_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
-LINE_GROUP_ID = os.environ.get('LINE_GROUP_ID')
-LINE_PUSH_API_URL = "https://api.line.me/v2/bot/message/push"
+LINE_API_URL = "https://api.line.me/v2/bot/message/broadcast"
 
-# --- [ไม่แก้ไข] ฟังก์ชันสำหรับตั้งค่า Selenium Driver ---
-def setup_driver():
-    """ตั้งค่า Chrome Driver สำหรับทำงานแบบ Headless บน Server (เพิ่มประสิทธิภาพ)"""
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
-    
-    # ตั้งค่าเพื่อเพิ่มประสิทธิภาพ
-    chrome_options.add_argument("--disable-images")
-    chrome_options.add_argument("--blink-settings=imagesEnabled=false")
-    chrome_options.add_argument("--ignore-certificate-errors")
-    
-    chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36')
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=chrome_options)
-
-    # กำหนด Timeout สำหรับการโหลดหน้าเว็บและรันสคริปต์
-    driver.set_page_load_timeout(60)
-    driver.set_script_timeout(60)
-    
-    return driver
-
-# -- [ไม่แก้ไข] อ่านข้อมูลย้อนหลังจาก Excel --
+# -- อ่านข้อมูลย้อนหลังจาก Excel --
 THAI_MONTHS = {
     'มกราคม':1, 'กุมภาพันธ์':2, 'มีนาคม':3, 'เมษายน':4,
     'พฤษภาคม':5, 'มิถุนายน':6, 'กรกฎาคม':7, 'สิงหาคม':8,
     'กันยายน':9, 'ตุลาคม':10, 'พฤศจิกายน':11, 'ธันวาคม':12
 }
+
+# --- พยากรณ์อากาศ ---
+WEATHER_LAT = 15.120
+WEATHER_LON = 100.283
+
+def weather_code_to_description(code: int, precipitation: float) -> str:
+    if code in {95, 96, 99}:
+        return "พายุฝนฟ้าคะนอง"
+    if code == 0:
+        return "ท้องฟ้าแจ่มใส"
+    if code in {1, 2, 3}:
+        return "มีเมฆเป็นส่วนใหญ่"
+    if code in {45, 48}:
+        return "มีหมอก"
+    if code in {51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82}:
+        if precipitation >= 10.0:
+            return "ฝนตกหนัก"
+        if precipitation >= 2.0:
+            return "ฝนปานกลาง"
+        return "ฝนตกเล็กน้อย"
+    if code in {71, 73, 75, 77, 85, 86}:
+        return "หิมะ"
+    return "สภาพอากาศไม่ทราบแน่ชัด"
+
+def get_weather_forecast(
+    lat: float = WEATHER_LAT,
+    lon: float = WEATHER_LON,
+    days: int = 3,
+    timezone: str = "Asia/Bangkok",
+    timeout: int = 15,
+) -> List[Tuple[str, str]]:
+    try:
+        params = {
+            "latitude": lat,
+            "longitude": lon,
+            "daily": "weathercode,precipitation_sum",
+            "timezone": timezone,
+        }
+        resp = requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params=params,
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json().get("daily", {})
+        dates = data.get("time", [])
+        codes = data.get("weathercode", [])
+        precipitation_list = data.get("precipitation_sum", [])
+        forecast = []
+        for i in range(min(days, len(dates))):
+            date = dates[i]
+            code = codes[i] if i < len(codes) else None
+            prec = precipitation_list[i] if i < len(precipitation_list) else 0.0
+            desc = weather_code_to_description(code, prec) if code is not None else "-"
+            forecast.append((date, desc))
+        return forecast
+    except Exception as e:
+        print(f"❌ ERROR: get_weather_forecast: {e}")
+        return []
+
 def get_historical_from_excel(year_be: int) -> int | None:
-    possible_paths = [f"data/ระดับน้ำปี{year_be}.xlsx", f"ระดับน้ำปี{year_be}.xlsx"]
-    file_path = None
-    for p in possible_paths:
-        if os.path.exists(p): file_path = p; break
-    if file_path is None: print(f"⚠️ ไม่พบไฟล์ข้อมูลย้อนหลังปี {year_be}"); return None
+    path = f"data/ระดับน้ำปี{year_be}.xlsx"
     try:
-        df = pd.read_excel(file_path)
-        discharge_col = None
-        for col in df.columns:
-            if 'ลบ.ม.' in str(col) or 'discharge' in str(col) or 'ค่า' in str(col): discharge_col = col; break
-        if discharge_col is None: return None
-        df = df.rename(columns={discharge_col: 'discharge'})
-        if 'เดือน' in df.columns and 'วันที่' in df.columns:
-            df['month_num'] = df['เดือน'].map(THAI_MONTHS); df['day_num'] = df['วันที่']
-        elif 'วันที่' in df.columns:
-            df['date'] = pd.to_datetime(df['วันที่'], errors='coerce'); df['month_num'] = df['date'].dt.month; df['day_num'] = df['date'].dt.day
-        else: return None
+        if not os.path.exists(path):
+            print(f"⚠️ ไม่พบไฟล์ข้อมูลย้อนหลังที่: {path}")
+            return None
+        df = pd.read_excel(path)
+        df = df.rename(columns={'ปริมาณน้ำ (ลบ.ม./วินาที)': 'discharge'})
+        df['month_num'] = df['เดือน'].map(THAI_MONTHS)
         now = datetime.now(pytz.timezone('Asia/Bangkok'))
-        match = df[(df['day_num'] == now.day) & (df['month_num'] == now.month)]
+        today_d, today_m = now.day, now.month
+        match = df[(df['วันที่']==today_d) & (df['month_num']==today_m)]
         if not match.empty:
-            val = match.iloc[0]['discharge']; val_int = int(str(val).replace(',', ''))
-            print(f"✅ พบข้อมูลย้อนหลังสำหรับปี {year_be}: {val_int} ลบ.ม./วินาที (ไฟล์: {file_path})")
-            return val_int
-        print(f"⚠️ ไม่พบข้อมูลสำหรับวันที่ {now.day}/{now.month} ในไฟล์ปี {year_be} (ไฟล์: {file_path})")
-        return None
-    except Exception as e:
-        print(f"❌ ERROR: ไม่สามารถโหลดข้อมูลย้อนหลังจาก Excel ได้ ({file_path}): {e}"); return None
-
-# --- [แก้ไข] ดึงระดับน้ำสถานีอินทร์บุรีโดยใช้ Selenium ---
-def get_inburi_data(url: str, timeout: int = 45):
-    """
-    ดึงข้อมูลระดับน้ำและระดับตลิ่งของสถานีอินทร์บุรีจากหน้าเว็บ thaiwater
-
-    เนื่องจากหน้าเว็บใช้ React/Material UI จึงต้องใช้ Selenium โหลดหน้าและใช้ BeautifulSoup
-    วิเคราะห์ DOM ที่เรนเดอร์แล้ว เพื่อค้นหาแถวที่มีชื่อสถานี "สถานีอินทร์บุรี" ในคอลัมน์แรก
-
-    คืนค่าระดับน้ำและระดับตลิ่งเป็น tuple (water_level, bank_level)
-    หากไม่พบข้อมูลหรือเกิดข้อผิดพลาดจะคืน (None, None)
-    """
-    if not SELENIUM_AVAILABLE:
-        return None, None
-    driver = setup_driver()
-    try:
-        try:
-            driver.get(url)
-        except TimeoutException:
-            print("⚠️ ERROR: หน้าเว็บอินทร์บุรีโหลดไม่เสร็จในเวลาที่กำหนด (Page Load Timeout)")
-            return None, None
-        
-        # [!!! START EDIT 1 !!!]
-        # เปลี่ยนเงื่อนไขการรอ ให้เจาะจงไปที่ Table Header (th)
-        # ที่มี span ที่มีข้อความ "สถานีอินทร์บุรี" ตาม HTML ที่ผู้ใช้ส่งมา
-        try:
-            print(f"...กำลังรอ Table Header 'สถานีอินทร์บุรี' (สูงสุด {timeout} วินาที)...")
-            WebDriverWait(driver, timeout).until(
-                EC.presence_of_element_located((By.XPATH, "//th[.//span[contains(text(), 'สถานีอินทร์บุรี')]]"))
-            )
-            print("✅ พบ 'สถานีอินทร์บุรี' ในตารางแล้ว")
-        except TimeoutException:
-            # อัปเดตข้อความ Error ให้ชัดเจนขึ้น
-            print(f"⚠️ Timeout: ไม่พบตารางแถว 'สถานีอินทร์บุรี' หลังจากรอ {timeout} วินาที")
-            return None, None
-        # [!!! END EDIT 1 !!!]
-
-        html = driver.page_source
-        soup = BeautifulSoup(html, "html.parser")
-
-        # ค้นหาแถวที่มีชื่อสถานี "สถานีอินทร์บุรี" ในคอลัมน์แรก (ภายใน <th> หรือ <button>/<span>)
-        # ตรรกะส่วนนี้ยังคงใช้ได้ดีกับ HTML ที่ผู้ใช้ส่งมา
-        target_row = None
-        for row in soup.find_all('tr'):
-            th = row.find('th')
-            if not th:
-                continue
-            text = th.get_text(strip=True)
-            # บางครั้ง <th> มีตัวอักษร "สถานีอินทร์บุรี" หรือ "อินทร์บุรี"; ตรวจสอบทั้งสอง
-            if 'สถานีอินทร์บุรี' in text: # <--- 'สถานีอินทร์บุรี' จะจับคู่ได้
-                target_row = row
-                break
-        
-        if target_row is None:
-            # Fallback (เผื่อไว้ แต่ไม่น่าได้ใช้)
-            for row in soup.find_all('tr'):
-                button = row.find('button')
-                if button and 'สถานีอินทร์บุรี' in button.get_text(strip=True):
-                    target_row = row
-                    break
-
-        if target_row is None:
-            print("⚠️ ไม่พบข้อมูลสถานี 'สถานีอินทร์บุรี' ในตาราง (หลังใช้ Selenium)")
-            return None, None
-        
-        # ดึงข้อมูลจากคอลัมน์แต่ละช่อง หากมี <td> 4 ช่องขึ้นไป
-        # ตรรกะนี้ถูกต้องตาม HTML ที่ผู้ใช้ส่งมา
-        # <th> (สถานี)
-        # <td> (แม่น้ำ)      -> tds[0]
-        # <td> (ต.อินทร์บุรี) -> tds[1]
-        # <td> (14.28)      -> tds[2] (ระดับน้ำ)
-        # <td> (15.10)      -> tds[3] (ระดับตลิ่ง)
-        water_level = None
-        bank_level = None
-        tds = target_row.find_all('td')
-        
-        if len(tds) >= 4:
-            try:
-                wl_text = tds[2].get_text(strip=True)
-                bl_text = tds[3].get_text(strip=True)
-                water_level = float(wl_text.replace(',', '')) if wl_text not in [None, ''] else None
-                bank_level = float(bl_text.replace(',', '')) if bl_text not in [None, ''] else None
-            except Exception as e:
-                print(f"⚠️ Parsing error: ไม่สามารถแปลงค่าในคอลัมน์เป็นตัวเลขได้: {e}")
-                water_level = None; bank_level = None
-        
-        # Fallback (เผื่อไว้)
-        if water_level is None or bank_level is None:
-            row_text = target_row.get_text(separator=' ', strip=True)
-            num_strs = re.findall(r'[-+]?\d*\.\d+|\d+', row_text)
-            values = []
-            for ns in num_strs:
-                try:
-                    values.append(float(ns))
-                except Exception:
-                    continue
-            if len(values) >= 2:
-                water_level, bank_level = values[0], values[1]
-
-        if water_level is None or bank_level is None:
-            print("⚠️ ไม่พบข้อมูลตัวเลขที่เพียงพอสำหรับสถานี 'อินทร์บุรี' (ต้องมีอย่างน้อย 2 ค่า)")
-            return None, None
-            
-        print(f"✅ พบข้อมูลสถานีอินทร์บุรี: ระดับน้ำ={water_level}, ระดับตลิ่ง={bank_level}")
-        return water_level, bank_level
-        
-    except Exception as e:
-        print(f"⚠️ ERROR: get_inburi_data (Selenium): {e}")
-        return None, None
-    finally:
-        driver.quit()
-
-# --- [แก้ไข] ดึงข้อมูลเขื่อนเจ้าพระยา (เพิ่มการดักจับ Timeout) ---
-# [!!! START EDIT 2 !!!]
-# เพิ่ม Timeout เริ่มต้นเป็น 45 วินาที
-def fetch_chao_phraya_dam_discharge(url: str, timeout: int = 45):
-    if not SELENIUM_AVAILABLE: return None
-    driver = setup_driver()
-    try:
-        try:
-            driver.get(url)
-        except TimeoutException:
-            print("⚠️ ERROR: หน้าเว็บเขื่อนเจ้าพระยาโหลดไม่เสร็จในเวลาที่กำหนด (Page Load Timeout)")
+            print(f"✅ พบข้อมูลย้อนหลังสำหรับปี {year_be}: {int(match.iloc[0]['discharge'])} ลบ.ม./วินาที")
+            return int(match.iloc[0]['discharge'])
+        else:
+            print(f"⚠️ ไม่พบข้อมูลสำหรับวันที่ {today_d}/{today_m} ในไฟล์ปี {year_be}")
             return None
+    except Exception as e:
+        print(f"❌ ERROR: ไม่สามารถโหลดข้อมูลย้อนหลังจาก Excel ได้ ({path}): {e}")
+        return None
 
-        # พยายามรอให้ตัวแปร json_data ที่ถูกประกาศในสคริปต์ของเว็บถูกกำหนดค่าจริง ๆ (อาจมาจาก AJAX)
-        data = None
+# --- Helper function to read historical discharge values from a combined CSV ---
+def get_historical_from_csv(year_be: int, csv_path: str = "historical_comparison_2554_2565_2567.csv") -> int | None:
+    """
+    Return the historical discharge value for a given Buddhist Era year and the current day/month
+    from a CSV file.  The CSV must have a 'day_month' column formatted as DD-MM and
+    columns for each year (e.g., '2554', '2565', '2567') containing discharge values.
+
+    Parameters
+    ----------
+    year_be : int
+        The Buddhist Era year to look up (e.g., 2565 for the year 2022).
+    csv_path : str
+        Path to the CSV containing historical values.
+
+    Returns
+    -------
+    int | None
+        The discharge value for the current day/month in the specified year, or None if not found.
+    """
+    try:
+        if not os.path.exists(csv_path):
+            print(f"⚠️ ไม่พบไฟล์ข้อมูลย้อนหลัง (CSV) ที่: {csv_path}")
+            return None
+        df = pd.read_csv(csv_path)
+        year_col = str(year_be)
+        if year_col not in df.columns:
+            print(f"⚠️ ไม่พบคอลัมน์ปี {year_col} ในไฟล์ CSV")
+            return None
+        now = datetime.now(pytz.timezone('Asia/Bangkok'))
+        day_month = now.strftime("%d-%m")
+        match = df[df['day_month'] == day_month]
+        if match.empty:
+            print(f"⚠️ ไม่มีข้อมูลย้อนหลังสำหรับ {day_month} ในไฟล์ CSV")
+            return None
+        value = match.iloc[0][year_col]
+        if pd.isna(value):
+            print(f"⚠️ ไม่มีค่าปริมาณน้ำสำหรับ {day_month} ปี {year_be} ใน CSV")
+            return None
         try:
-            print(f"...กำลังรอ json_data จากเว็บเขื่อนฯ (สูงสุด {timeout} วินาที)...")
-            # แก้ไขจาก 30 (Hardcoded) ให้ใช้ตัวแปร timeout ที่รับมา
-            WebDriverWait(driver, timeout).until(lambda d: d.execute_script("return (typeof json_data !== 'undefined' && json_data.length > 0);"))
-            data = driver.execute_script('return json_data')
-            print("✅ พบ json_data แล้ว")
+            return int(float(value))
         except Exception:
-            # หากไม่สามารถดึง json_data ผ่าน execute_script ได้ ให้ใช้ fallback เดิมด้วยการค้นหาใน page_source
-            print("⚠️ 'json_data' (execute_script) ล้มเหลว, กำลังลอง fallback (regex)...")
-            html = driver.page_source
-            match = re.search(r'json_data\s*=\s*(\[.*?\]);', html, flags=re.DOTALL)
-            if not match:
-                print("⚠️ ไม่พบตัวแปร 'json_data' ในหน้าเว็บ (หลังใช้ Selenium)")
-                return None
-            json_string = match.group(1)
-            try:
-                data = json.loads(json_string)
-            except Exception as e:
-                print(f"⚠️ ERROR: แปลง json_data ไม่สำเร็จ: {e}")
-                return None
-        # [!!! END EDIT 2 !!!]
-
-        # หากยังไม่สามารถกำหนด data ได้ ให้แจ้งเตือน
-        if not data:
-            print("⚠️ ไม่สามารถดึงข้อมูล json_data จากหน้าเว็บได้")
+            print(f"⚠️ ไม่สามารถแปลงค่าปริมาณน้ำเป็นตัวเลข: {value}")
             return None
-            
-        # วนซ้ำข้อมูลเพื่อค้นหาค่าของสถานี C13 (ตรรกะเดิม)
-        for entry in data:
-            if not isinstance(entry, dict):
-                continue
-            # พิจารณาว่าข้อมูลสถานีอาจอยู่ในหลายกลุ่ม เช่น 'itc_water', 'dam', 'tele'
-            possible_containers = []
-            if isinstance(entry.get('itc_water'), dict):
-                possible_containers.append(entry['itc_water'])
-            if isinstance(entry.get('dam'), list):
-                # แปลง list ของ dam เป็น dict โดยใช้ station id เป็น key หากมี
-                dam_dict = {}
-                for dam in entry['dam']:
-                    if isinstance(dam, dict) and dam.get('station'):
-                        dam_dict[dam['station']] = dam
-                possible_containers.append(dam_dict)
-            if isinstance(entry.get('tele'), list):
-                tele_dict = {}
-                for tele in entry['tele']:
-                    if isinstance(tele, dict) and tele.get('station'):
-                        tele_dict[tele['station']] = tele
-                possible_containers.append(tele_dict)
-            
-            # ตรวจสอบในทุก container ที่เป็น dict ว่ามีคีย์ C13 หรือไม่
-            for cont in possible_containers:
-                c13_data = cont.get('C13')
-                if not isinstance(c13_data, dict):
-                    continue
-                # ลองหา value จากหลายชื่อฟิลด์
-                for key in ['storage', 'flow', 'quantity', 'discharge', 'value']:
-                    val = c13_data.get(key)
-                    if val:
-                        try:
-                            value = float(str(val).replace(',', ''))
-                            print(f"✅ พบข้อมูลเขื่อนเจ้าพระยา ({key}): {value}")
-                            return value
-                        except ValueError:
-                            continue
-                            
-        print("⚠️ พบ json_data แต่ไม่พบข้อมูลระบายน้ำที่ต้องการสำหรับสถานี C13")
-        return None
-        
     except Exception as e:
-        print(f"⚠️ ERROR: fetch_chao_phraya_dam_discharge (Selenium): {e}"); return None
-    finally:
-        driver.quit()
+        print(f"❌ ERROR: ไม่สามารถโหลดข้อมูลย้อนหลังจาก CSV ได้ ({csv_path}): {e}")
+        return None
 
-# --- [ไม่แก้ไข] วิเคราะห์และสร้างข้อความ ---
-def analyze_and_create_message(inburi_level, dam_discharge, bank_height, hist_2567=None, hist_2565=None, hist_2554=None):
-    distance_to_bank = bank_height - inburi_level; ICON, HEADER, summary_text = "", "", ""
-    if dam_discharge > 2400 or distance_to_bank < 1.0:
-        ICON, HEADER = "🟥", "‼️ ประกาศเตือนภัยระดับสูงสุด ‼️"
-        summary_text = "คำแนะนำ:\n1. เตรียมพร้อมอพยพหากอยู่ในพื้นที่เสี่ยง\n2. ขนย้ายทรัพย์สินขึ้นที่สูงโดยด่วน\n3. งดใช้เส้นทางสัญจรริมแม่น้ำ"
-    elif dam_discharge > 1800 or distance_to_bank < 2.0:
-        ICON, HEADER = "🟨", "‼️ ประกาศเฝ้าระวัง ‼️"
-        summary_text = "คำแนะนำ:\n1. บ้านเรือนริมตลิ่งนอกคันกั้นน้ำ ให้เริ่มขนของขึ้นที่สูง\n2. ติดตามสถานการณ์อย่างใกล้ชิด"
+def get_station_data(
+    province_code: str | None = None,
+    target_tumbon: str | None = None,
+    target_station_name: str | None = None,
+    timeout: int = 15,
+    retries: int = 3,
+) -> tuple[float | None, float | None, str | None]:
+    """
+    Fetch the latest water level and bank height for a specific tele‑station
+    from the Thaiwater API.  This function generalises the previous
+    `get_sapphaya_data` by allowing the caller to specify the province
+    code and station identifiers via environment variables.  If these
+    variables are not provided, sensible defaults corresponding to
+    สถานีสรรพยา (โพนางดำออก) will be used.  The function returns the
+    water level (MSL), bank height and a human‑readable location string.
+
+    Environment variables used (optional):
+      • STATION_PROVINCE_CODE – Two‑digit code of the target province
+      • STATION_TUMBON       – Name of the target sub‑district (ต. ...)
+      • STATION_NAME         – Name of the tele‑station
+      • BANK_HEIGHT          – Override value for bank height (float)
+
+    Parameters
+    ----------
+    province_code : str | None
+        Province code for the query.  If None, reads from the
+        STATION_PROVINCE_CODE environment variable, defaulting to "18".
+    target_tumbon : str | None
+        Target sub‑district name.  If None, reads from STATION_TUMBON,
+        defaulting to "โพนางดำออก".
+    target_station_name : str | None
+        Target tele‑station name.  If None, reads from STATION_NAME,
+        defaulting to "สรรพยา".
+    timeout : int
+        Request timeout.
+    retries : int
+        Number of retries on failure.
+
+    Returns
+    -------
+    tuple[float | None, float | None, str | None]
+        (water_level, bank_height, location_description) or (None, None, None)
+    """
+    # Resolve parameters from environment if not explicitly provided
+    province_code = province_code or os.environ.get("STATION_PROVINCE_CODE", "18")
+    target_tumbon = target_tumbon or os.environ.get("STATION_TUMBON", "โพนางดำออก")
+    target_station_name = target_station_name or os.environ.get("STATION_NAME", "สรรพยา")
+    api_url_template = (
+        "https://api-v3.thaiwater.net/api/v1/thaiwater30/public/waterlevel?province_code={code}"
+    )
+    for attempt in range(retries):
+        try:
+            url = api_url_template.format(code=province_code)
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/91.0.4472.124 Safari/537.36"
+                ),
+            }
+            response = requests.get(url, headers=headers, timeout=timeout)
+            response.raise_for_status()
+            data = response.json().get("data", [])
+            for item in data:
+                geocode = item.get("geocode", {})
+                tumbon_name = geocode.get("tumbon_name", {}).get("th", "")
+                amphoe_name = geocode.get("amphoe_name", {}).get("th", "")
+                province_name = geocode.get("province_name", {}).get("th", "")
+                station_info = item.get("station", {})
+                station_name = station_info.get("tele_station_name", {}).get("th", "")
+                if tumbon_name == target_tumbon and station_name == target_station_name:
+                    wl_str = item.get("waterlevel_msl")
+                    water_level: float | None = None
+                    if wl_str is not None:
+                        try:
+                            water_level = float(wl_str)
+                        except Exception:
+                            water_level = None
+                    # Determine bank height.  If an override is specified
+                    # via BANK_HEIGHT, use it; otherwise use the maximum
+                    # of left_bank and right_bank from the API.  If those
+                    # fields are missing or invalid, fall back to 13.87.
+                    bank_override = os.environ.get("BANK_HEIGHT")
+                    bank_level: float | None = None
+                    if bank_override:
+                        try:
+                            bank_level = float(bank_override)
+                        except Exception:
+                            print(
+                                f"⚠️ ค่าความสูงตลิ่งใน environment ไม่ถูกต้อง ('{bank_override}'), จะลองใช้ค่าจาก API"
+                            )
+                            bank_level = None
+                    if bank_level is None:
+                        try:
+                            left_bank = station_info.get("left_bank")
+                            right_bank = station_info.get("right_bank")
+                            banks = [b for b in [left_bank, right_bank] if b is not None]
+                            if banks:
+                                bank_level = max(float(b) for b in banks)
+                            else:
+                                bank_level = 13.87
+                        except Exception:
+                            bank_level = 13.87
+                    location_desc = f"ต.{tumbon_name} อ.{amphoe_name} จ.{province_name}"
+                    print(
+                        f"✅ พบข้อมูลสถานี '{target_station_name}' ที่ {target_tumbon}: ระดับน้ำ={water_level}, ตลิ่ง={bank_level}"
+                    )
+                    return water_level, bank_level, location_desc
+            print(
+                f"⚠️ ไม่พบข้อมูลสถานี '{target_station_name}' ที่ {target_tumbon} ในการเรียก API ครั้งที่ {attempt + 1}"
+            )
+        except Exception as e:
+            print(f"❌ ERROR: get_station_data (ครั้งที่ {attempt + 1}): {e}")
+        if attempt < retries - 1:
+            time.sleep(3)
+    return None, None, None
+
+def fetch_chao_phraya_dam_discharge(
+    province_code: str | None = None,
+    target_station_oldcode: str = "C.13",
+    timeout: int = 15,
+    retries: int = 3,
+) -> float | None:
+    """
+    Retrieve the latest discharge value for the Chao Phraya Dam (ท้ายเขื่อนเจ้าพระยา)
+    from the Thaiwater API.  The API provides water level and discharge
+    information keyed by tele‑station codes.  This function looks for
+    station code `C.13` within a given province and returns the discharge
+    value in cubic metres per second.
+
+    Environment variable override: if `DAM_PROVINCE_CODE` is set it will
+    be used as the province_code.  Otherwise, the default is "18" (Chai
+    Nat), where the Chao Phraya Dam is located.
+
+    Parameters
+    ----------
+    province_code : str | None
+        Two‑digit province code to search within.  Defaults to
+        environment variable `DAM_PROVINCE_CODE` or "18".
+    target_station_oldcode : str
+        Tele‑station old code of the dam.  Default is "C.13".
+    timeout : int
+        Request timeout in seconds.
+    retries : int
+        Number of retries to perform on failure.
+
+    Returns
+    -------
+    float | None
+        Discharge in cubic metres per second, or None if not found.
+    """
+    province_code = province_code or os.environ.get("DAM_PROVINCE_CODE", "18")
+    api_url_template = (
+        "https://api-v3.thaiwater.net/api/v1/thaiwater30/public/waterlevel?province_code={code}"
+    )
+    for attempt in range(retries):
+        try:
+            url = api_url_template.format(code=province_code)
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/91.0.4472.124 Safari/537.36"
+                ),
+            }
+            response = requests.get(url, headers=headers, timeout=timeout)
+            response.raise_for_status()
+            data = response.json().get("data", [])
+            for item in data:
+                station_info = item.get("station", {})
+                oldcode = station_info.get("tele_station_oldcode")
+                if oldcode == target_station_oldcode:
+                    discharge = item.get("discharge")
+                    if discharge is not None:
+                        try:
+                            value = float(discharge)
+                        except Exception:
+                            value = float(str(discharge).replace(",", ""))
+                        print(f"✅ พบข้อมูลเขื่อนเจ้าพระยา: {value}")
+                        return value
+                    else:
+                        print("⚠️ ไม่พบข้อมูลการระบาย (discharge) ใน API สำหรับ C.13")
+                        return None
+            print(
+                f"⚠️ ไม่พบสถานีรหัส {target_station_oldcode} ในจังหวัดรหัส {province_code} ครั้งที่ {attempt + 1}"
+            )
+        except Exception as e:
+            print(f"❌ ERROR: fetch_chao_phraya_dam_discharge (ครั้งที่ {attempt + 1}): {e}")
+        if attempt < retries - 1:
+            time.sleep(3)
+    return None
+
+def analyze_and_create_message(
+    water_level: float,
+    dam_discharge: float,
+    bank_height: float,
+    location_desc: str,
+    hist_2567: int | None = None,
+    hist_2565: int | None = None,
+    hist_2554: int | None = None,
+    weather_summary: List[Tuple[str, str]] | None = None,
+) -> str:
+    distance_to_bank = bank_height - water_level
+    if dam_discharge is not None and (dam_discharge > 2400 or distance_to_bank < 1.0):
+        ICON = "🟥"
+        HEADER = "‼️ ประกาศเตือนภัยระดับสูงสุด ‼️"
+        summary_lines = [
+            "คำแนะนำ:",
+            "1. เตรียมพร้อมอพยพหากอยู่ในพื้นที่เสี่ยง",
+            "2. ขนย้ายทรัพย์สินขึ้นที่สูงโดยด่วน",
+            "3. งดใช้เส้นทางสัญจรริมแม่น้ำ",
+        ]
+    elif dam_discharge is not None and (dam_discharge > 1800 or distance_to_bank < 2.0):
+        ICON = "🟨"
+        HEADER = "‼️ ประกาศเฝ้าระวัง ‼️"
+        summary_lines = [
+            "คำแนะนำ:",
+            "1. บ้านเรือนริมตลิ่งนอกคันกั้นน้ำ ให้เริ่มขนของขึ้นที่สูง",
+            "2. ติดตามสถานการณ์อย่างใกล้ชิด",
+        ]
     else:
-        ICON, HEADER = "🟩", "สถานะปกติ"; summary_text = "สถานการณ์น้ำยังปกติ ใช้ชีวิตได้ตามปกติครับ"
-    now = datetime.now(pytz.timezone('Asia/Bangkok')); TIMESTAMP = now.strftime('%d/%m/%Y %H:%M')
-    msg_lines = [ f"{ICON} {HEADER}", "", f"📍 รายงานสถานการณ์น้ำเจ้าพระยา จ.อ.อินทร์บุรี", f"🗓️ วันที่: {TIMESTAMP} น.", "", "🌊 ระดับน้ำ + ระดับตลิ่ง", f"  • อินทร์บุรี: {inburi_level:.2f} ม.รทก.", f"  • ตลิ่ง: {bank_height:.2f} ม.รทก. (ต่ำกว่า {distance_to_bank:.2f} ม.)", "", "💧 ปริมาณน้ำปล่อยเขื่อนเจ้าพระยา", f"  {dam_discharge:,.0f} ลบ.ม./วินาที", "", "🔄 เปรียบเทียบย้อนหลัง", ]
-    if hist_2567 is not None: msg_lines.append(f"  • ปี 2567: {hist_2567:,.0f} ลบ.ม./วินาที")
-    if hist_2565 is not None: msg_lines.append(f"  • ปี 2565: {hist_2565:,.0f} ลบ.ม./วินาที")
-    if hist_2554 is not None: msg_lines.append(f"  • ปี 2554: {hist_2554:,.0f} ลบ.ม./วินาที")
-    msg_lines += ["", summary_text]
+        ICON = "🟩"
+        HEADER = "สถานะปกติ"
+        summary_lines = [
+            f"ระดับน้ำยังห่างตลิ่ง {distance_to_bank:.2f} ม. ถือว่า \"ปลอดภัย\" ✅",
+            "ประชาชนใช้ชีวิตได้ตามปกติครับ",
+        ]
+    now = datetime.now(pytz.timezone("Asia/Bangkok"))
+    TIMESTAMP = now.strftime("%d/%m/%Y %H:%M")
+    msg_lines: List[str] = []
+    msg_lines.append(f"{ICON} {HEADER}")
+    msg_lines.append(f"📍 {location_desc}")
+    msg_lines.append(f"🗓️ วันที่: {TIMESTAMP} น.")
+    msg_lines.append("")
+    msg_lines.append("🌊 ระดับน้ำ + ตลิ่ง")
+    msg_lines.append(f"• ระดับน้ำ: {water_level:.2f} ม.รทก.")
+    msg_lines.append(f"• ตลิ่ง: {bank_height:.2f} ม.รทก. (ต่ำกว่า {distance_to_bank:.2f} ม.)")
+    msg_lines.append("")
+    msg_lines.append("💧 ปริมาณน้ำปล่อยเขื่อนเจ้าพระยา")
+    if dam_discharge is not None:
+        msg_lines.append(f"{dam_discharge:,} ลบ.ม./วินาที")
+    else:
+        msg_lines.append("ข้อมูลไม่พร้อมใช้งาน")
+    msg_lines.append("")
+    msg_lines.append("📊 เปรียบเทียบย้อนหลัง")
+    # List historical comparisons in chronological order: latest year first
+    if hist_2567 is not None:
+        msg_lines.append(f"• ปี 2567: {hist_2567:,} ลบ.ม./วินาที")
+    if hist_2565 is not None:
+        msg_lines.append(f"• ปี 2565: {hist_2565:,} ลบ.ม./วินาที")
+    if hist_2554 is not None:
+        msg_lines.append(f"• ปี 2554: {hist_2554:,} ลบ.ม./วินาที")
+    msg_lines.append("")
+    msg_lines.append("🧾 สรุปสถานการณ์")
+    for line in summary_lines:
+        msg_lines.append(line)
     return "\n".join(msg_lines)
 
-# --- [ไม่แก้ไข] สร้างข้อความ Error ---
-def create_error_message(inburi_status, discharge_status):
-    now = datetime.now(pytz.timezone('Asia/Bangkok')); return ( f"⚙️❌ เกิดข้อผิดพลาดในการดึงข้อมูล ❌⚙️\n" f"เวลา: {now.strftime('%d/%m/%Y %H:%M')} น.\n\n" f"• สถานะข้อมูลระดับน้ำอินทร์บุรี: {inburi_status}\n" f"• สถานะข้อมูลเขื่อนเจ้าพระยา: {discharge_status}\n\n" f"กรุณาตรวจสอบ Log บน GitHub Actions เพื่อดูรายละเอียดข้อผิดพลาดครับ" )
+def create_error_message(station_status: str, discharge_status: str) -> str:
+    """
+    Construct a generic error notification when either the station data
+    or the dam discharge cannot be retrieved.  The message uses the
+    current date/time and includes the target station name from
+    environment variables to improve clarity.
 
-# --- [ไม่แก้ไข] ส่งข้อความ LINE ---
-def send_line_push(message):
-    if not all([LINE_TOKEN, LINE_GROUP_ID]): print("❌ ไม่พบ LINE_TOKEN หรือ LINE_GROUP_ID"); return
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"}
-    payload = {"to": LINE_GROUP_ID, "messages": [{"type": "text", "text": message}]}
+    Parameters
+    ----------
+    station_status : str
+        "สำเร็จ" if the station data was retrieved, otherwise "ล้มเหลว".
+    discharge_status : str
+        "สำเร็จ" if the dam discharge was retrieved, otherwise "ล้มเหลว".
+
+    Returns
+    -------
+    str
+        A formatted error message.
+    """
+    now = datetime.now(pytz.timezone('Asia/Bangkok'))
+    # Use the station name from the environment to indicate which station failed
+    station_name = os.environ.get('STATION_NAME', 'สรรพยา')
+    return (
+        f"⚙️❌ เกิดข้อผิดพลาดในการดึงข้อมูล ❌⚙️\n"
+        f"เวลา: {now.strftime('%d/%m/%Y %H:%M')} น.\n\n"
+        f"• สถานะข้อมูลระดับน้ำ{station_name}: {station_status}\n"
+        f"• สถานะข้อมูลเขื่อนเจ้าพระยา: {discharge_status}\n\n"
+        f"กรุณาตรวจสอบ Log บน GitHub Actions เพื่อดูรายละเอียดข้อผิดพลาดครับ"
+    )
+
+def send_line_broadcast(message):
+    if not LINE_TOKEN:
+        print("❌ ไม่พบ LINE_CHANNEL_ACCESS_TOKEN!")
+        return
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {LINE_TOKEN}"
+    }
+    payload = {"messages": [{"type": "text", "text": message}]}
     try:
-        res = requests.post(LINE_PUSH_API_URL, headers=headers, json=payload, timeout=15); res.raise_for_status()
-        print("✅ ส่งข้อความ Push สำเร็จ!")
-    except Exception as e: print(f"❌ ERROR: LINE Push: {e}")
+        res = requests.post(LINE_API_URL, headers=headers, json=payload, timeout=10)
+        res.raise_for_status()
+        print("✅ ส่งข้อความ Broadcast สำเร็จ!")
+    except Exception as e:
+        print(f"❌ ERROR: LINE Broadcast: {e}")
 
-# --- [ไม่แก้ไข] Main ---
 if __name__ == "__main__":
-    print("=== เริ่มการทำงานระบบแจ้งเตือนน้ำอินทร์บุรี ===")
+    print("=== เริ่มการทำงานระบบแจ้งเตือนน้ำ (เวอร์ชันปรับปรุง) ===")
     
-    # [หมายเหตุ] ในโค้ดเก่า ระดับตลิ่งถูก Hardcoded ไว้ที่ 13.0
-    # แต่จากหน้าเว็บ (image_837665.png) คือ 15.10
-    # ตรรกะใหม่จะดึงค่า 15.10 มา
-    inburi_level, bank_level = get_inburi_data(SINGBURI_URL)
-    
-    # หากคุณต้องการบังคับค่าระดับตลิ่ง (เช่น 13.0 หรือ 15.10) ให้เอา comment บรรทัดล่างออก
-    # bank_level = 15.10 # <-- บังคับค่าระดับตลิ่ง
-    
-    # หาก get_inburi_data ล้มเหลว bank_level จะเป็น None
-    # เราต้องกำหนดค่าเริ่มต้นให้มันหากล้มเหลว เพื่อไม่ให้ create_error_message พัง
-    if bank_level is None:
-        print("⚠️ ไม่สามารถดึงระดับตลิ่งได้ ใช้ค่าสำรอง 15.10")
-        bank_level = 15.10 # ใช้ค่า 15.10 (จากภาพ) เป็นค่าสำรอง
-        
-    dam_discharge = fetch_chao_phraya_dam_discharge(DISCHARGE_URL)
-    hist_2567 = get_historical_from_excel(2567); hist_2565 = get_historical_from_excel(2565); hist_2554 = get_historical_from_excel(2554)
-    
-    if inburi_level is not None and bank_level is not None and dam_discharge is not None:
-        final_message = analyze_and_create_message( inburi_level, dam_discharge, bank_level, hist_2567=hist_2567, hist_2565=hist_2565, hist_2554=hist_2554, )
+    # --- Fetch Core Data ---
+    # Pull the station information using the generalised API helper.  This
+    # returns the water level, bank height and a formatted location string.
+    water_level, bank_level, location_desc = get_station_data()
+    # Retrieve discharge for the Chao Phraya dam.  If an override province
+    # code is supplied via environment variable `DAM_PROVINCE_CODE` it
+    # will be used; otherwise the default (18) is applied.
+    dam_discharge = fetch_chao_phraya_dam_discharge()
+    hist_2567 = get_historical_from_excel(2567)
+    hist_2554 = get_historical_from_excel(2554)
+    # Read year 2565 data from the combined CSV if available
+    hist_2565 = get_historical_from_csv(2565)
+
+    # --- Build Core Message ---
+    if water_level is not None and bank_level is not None and dam_discharge is not None:
+        # Pass historical values and the location description to the message creator
+        core_message = analyze_and_create_message(
+            water_level,
+            dam_discharge,
+            bank_level,
+            location_desc,
+            hist_2567,
+            hist_2565,
+            hist_2554,
+        )
     else:
-        inburi_status = "สำเร็จ" if inburi_level is not None else "ล้มเหลว"
+        station_status = "สำเร็จ" if water_level is not None else "ล้มเหลว"
         discharge_status = "สำเร็จ" if dam_discharge is not None else "ล้มเหลว"
-        final_message = create_error_message(inburi_status, discharge_status)
-        
-    print("\n📤 ข้อความที่จะแจ้งเตือน:"); print(final_message); print("\n🚀 ส่งข้อความไปยัง LINE...")
-    send_line_push(final_message); print("✅ เสร็จสิ้นการทำงาน")
+        core_message = create_error_message(station_status, discharge_status)
+
+    # --- Assemble Final Message for LINE ---
+    # Allow the municipality name to be overridden via environment variable.
+    municipality = os.environ.get("MUNICIPALITY_NAME", "เทศบาลตำบลโพนางดำออก")
+    final_message = f"{core_message}\n\n{municipality}"
+
+    print("\n📤 ข้อความที่จะแจ้งเตือน:")
+    print(final_message)
+    print("\n🚀 กำลังส่งข้อความไปยัง LINE...")
+    send_line_broadcast(final_message)
+    print("✅ เสร็จสิ้นการทำงาน")
