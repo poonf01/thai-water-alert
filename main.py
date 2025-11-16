@@ -147,20 +147,41 @@ def fetch_chao_phraya_dam_discharge(url: str, timeout: int = 30):
         WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.XPATH, "//script[contains(text(), 'json_data')]")))
         html = driver.page_source
         match = re.search(r'json_data\s*=\s*(\[.*?\]);', html, flags=re.DOTALL)
-        if not match: print("⚠️ ไม่พบตัวแปร 'json_data' ในหน้าเว็บ (หลังใช้ Selenium)"); return None
-        json_string = match.group(1); data = json.loads(json_string)
+        # หากไม่พบตัวแปร json_data ใน html อาจเป็นเพราะหน้าเว็บโหลดข้อมูลผ่าน AJAX
+        if not match:
+            print("⚠️ ไม่พบตัวแปร 'json_data' ในหน้าเว็บ (หลังใช้ Selenium)")
+            return None
+        json_string = match.group(1)
+        try:
+            data = json.loads(json_string)
+        except Exception as e:
+            # ป้องกันกรณี json ไม่ถูกต้อง
+            print(f"⚠️ ERROR: แปลง json_data ไม่สำเร็จ: {e}")
+            return None
+        # พยายามค้นหาข้อมูลระบายน้ำของสถานี C13 โดยลองหลายชื่อฟิลด์ เช่น storage, flow, quantity, discharge
         for entry in data:
-            if isinstance(entry, dict) and 'itc_water' in entry and 'C13' in entry['itc_water']:
-                
-                # --- [แก้ไข] ---
-                # เปลี่ยนจาก 'storage' (ที่กลายเป็น None) ไปเป็น 'discharge'
-                # -----------------
-                discharge_val = entry['itc_water']['C13'].get('discharge') 
-                
-                if discharge_val:
-                    value = float(str(discharge_val).replace(',', ''))
-                    print(f"✅ พบข้อมูลเขื่อนเจ้าพระยา: {value}"); return value
-        print("⚠️ พบ json_data แต่ไม่พบข้อมูล 'C13.discharge'"); return None # อัปเดต Error log
+            if not isinstance(entry, dict):
+                continue
+            itc = entry.get('itc_water')
+            if not isinstance(itc, dict):
+                continue
+            c13_data = itc.get('C13')
+            if not isinstance(c13_data, dict):
+                continue
+            for key in ['storage', 'flow', 'quantity', 'discharge']:
+                val = c13_data.get(key)
+                if val:
+                    try:
+                        # แปลงค่าที่พบเป็นตัวเลข float โดยตัด comma
+                        value = float(str(val).replace(',', ''))
+                        print(f"✅ พบข้อมูลเขื่อนเจ้าพระยา ({key}): {value}")
+                        return value
+                    except ValueError:
+                        # ข้ามหากไม่สามารถแปลงค่า
+                        continue
+        # หากยังไม่พบข้อมูลสำหรับ C13 เลย
+        print("⚠️ พบ json_data แต่ไม่พบข้อมูลระบายน้ำที่ต้องการสำหรับสถานี C13")
+        return None
     except Exception as e:
         print(f"⚠️ ERROR: fetch_chao_phraya_dam_discharge (Selenium): {e}"); return None
     finally:
@@ -199,11 +220,11 @@ def send_line_push(message):
         print("✅ ส่งข้อความ Push สำเร็จ!")
     except Exception as e: print(f"❌ ERROR: LINE Push: {e}")
 
-# --- Main (คงค่า bank_level = 13.0 ตามที่ผู้ใช้ต้องการ) ---
+# --- Main (แก้ไขส่วนนี้) ---
 if __name__ == "__main__":
     print("=== เริ่มการทำงานระบบแจ้งเตือนน้ำอินทร์บุรี ===")
-    inburi_level, _ = get_inburi_data(SINGBURI_URL) # ไม่ใช้ bank_level ที่ดึงมา
-    bank_level = 13.0 # <--- บังคับค่าระดับตลิ่งเป็น 13 เมตร (ตามที่ผู้ใช้ต้องการ)
+    inburi_level, bank_level = get_inburi_data(SINGBURI_URL)
+    bank_level = 13.0 # <--- บังคับค่าระดับตลิ่งเป็น 13 เมตร
     dam_discharge = fetch_chao_phraya_dam_discharge(DISCHARGE_URL)
     hist_2567 = get_historical_from_excel(2567); hist_2565 = get_historical_from_excel(2565); hist_2554 = get_historical_from_excel(2554)
     if inburi_level is not None and bank_level is not None and dam_discharge is not None:
