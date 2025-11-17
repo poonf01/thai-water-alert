@@ -634,8 +634,9 @@ if __name__ == "__main__":
 
     # --- Assemble Final Message for LINE ---
     # The weather forecast section is intentionally removed per user request.
-    # Include the configured municipality name at the end of the message.
-    final_message = f"{core_message}\n\n{MUNICIPALITY_NAME}"
+    # The final message should no longer append the municipality name.  This avoids
+    # adding trailing lines like "เทศบาลตำบลอินทร์บุรี" to the notification.
+    final_message = core_message
 
     print("\n📤 ข้อความที่จะแจ้งเตือน:")
     print(final_message)
